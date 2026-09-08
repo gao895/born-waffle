@@ -1,0 +1,245 @@
+import type { VRM } from '@pixiv/three-vrm'
+import { Sparkles } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { ExportPanel } from './components/ExportPanel'
+import { ExpressionPanel } from './components/ExpressionPanel'
+import { HumanoidPanel } from './components/HumanoidPanel'
+import { MetadataPanel } from './components/MetadataPanel'
+import { ModelInfoPanel } from './components/ModelInfoPanel'
+import { ModelUploader } from './components/ModelUploader'
+import { ModelViewer } from './components/ModelViewer'
+import { ProgressBar } from './components/ProgressBar'
+import { SpringBonePanel } from './components/SpringBonePanel'
+import { ToastStack } from './components/Toast'
+import { ValidationPanel } from './components/ValidationPanel'
+import { ViewerControls } from './components/ViewerControls'
+import { useModel } from './hooks/useModel'
+import { useSkeleton } from './hooks/useSkeleton'
+import { useViewer } from './hooks/useViewer'
+import { useVRM } from './hooks/useVRM'
+import { loadVRMPreview } from './three/VRMExporter'
+import { VRMRequiredHumanBoneName } from './types/humanoid'
+import type { PipelineStep, StepState, ToastMessage } from './types/mapping'
+import { downloadBlob } from './utils/downloadBlob'
+
+const STEP_LABELS: Record<PipelineStep, string> = {
+  load: 'モデル読み込み',
+  analyze: 'モデル解析',
+  bones: 'ボーン設定',
+  vrm: 'VRM設定',
+  export: '書き出し',
+}
+
+let toastSeq = 0
+
+function App() {
+  const { model, loading, error, loadFile, reset } = useModel()
+  const { bones, mapping, humanoidJudgement, pose, setManualMapping, resetToAuto } = useSkeleton(model)
+  const {
+    metadata,
+    setMetadata,
+    expressions,
+    setExpressionMorphTarget,
+    springChains,
+    autoSpringBones,
+    clearSpringBones,
+    validation,
+    exporting,
+    exportError,
+    exportVrmFile,
+  } = useVRM(model, mapping, bones)
+  const viewer = useViewer()
+
+  const [toasts, setToasts] = useState<ToastMessage[]>([])
+  const [exportedBlob, setExportedBlob] = useState<Blob | null>(null)
+  const [previewVrm, setPreviewVrm] = useState<VRM | null>(null)
+
+  const pushToast = useCallback((kind: ToastMessage['kind'], text: string) => {
+    const id = `toast-${++toastSeq}`
+    setToasts((prev) => [...prev, { id, kind, text }])
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000)
+  }, [])
+  const dismissToast = useCallback((id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)), [])
+
+  const handleFileSelected = useCallback(
+    async (file: File) => {
+      setExportedBlob(null)
+      setPreviewVrm(null)
+      const loaded = await loadFile(file)
+      if (!loaded) {
+        pushToast('error', 'モデルの読み込みに失敗しました。')
+        return
+      }
+      if (!loaded.hasBones) {
+        pushToast('warning', 'このモデルにはボーンがありません。AI自動リギングは現在準備中です。')
+      } else {
+        pushToast('success', 'モデルを解析しました。')
+      }
+    },
+    [loadFile, pushToast],
+  )
+
+  const handleReset = useCallback(() => {
+    reset()
+    setExportedBlob(null)
+    setPreviewVrm(null)
+    viewer.clearSelectedBone()
+  }, [reset, viewer])
+
+  const handleExport = useCallback(async () => {
+    const blob = await exportVrmFile()
+    if (!blob) {
+      pushToast('error', exportError ?? 'VRMを生成できませんでした。')
+      return
+    }
+    setExportedBlob(blob)
+    try {
+      const vrm = await loadVRMPreview(blob)
+      setPreviewVrm(vrm)
+      pushToast('success', 'VRMアバターが完成しました！')
+    } catch (err) {
+      console.error('[App] preview reload failed', err)
+      pushToast('warning', 'VRMは生成されましたが、プレビューの再読み込みに失敗しました。')
+    }
+  }, [exportVrmFile, exportError, pushToast])
+
+  const handleDownload = useCallback(() => {
+    if (exportedBlob) downloadBlob(exportedBlob, 'avatar.vrm')
+  }, [exportedBlob])
+
+  const displayScene = previewVrm ? previewVrm.scene : (model?.scene ?? null)
+  const displayBones = previewVrm ? [] : bones
+
+  const steps: StepState[] = useMemo(() => {
+    const state = (step: PipelineStep, status: StepState['status']): StepState => ({ step, label: STEP_LABELS[step], status })
+    return [
+      state('load', loading ? 'active' : model ? 'done' : 'pending'),
+      state('analyze', model ? 'done' : 'pending'),
+      state('bones', mapping ? 'done' : model ? 'active' : 'pending'),
+      state('vrm', validation ? (validation.status === 'error' ? 'active' : 'done') : model ? 'pending' : 'pending'),
+      state('export', exportedBlob ? 'done' : exporting ? 'active' : 'pending'),
+    ]
+  }, [loading, model, mapping, validation, exporting, exportedBlob])
+
+  const requiredNames = useMemo(() => Object.values(VRMRequiredHumanBoneName), [])
+  const mappedRequiredCount = useMemo(
+    () => (mapping ? requiredNames.filter((n) => mapping[n]?.node).length : 0),
+    [mapping, requiredNames],
+  )
+  const expressionCount = useMemo(() => Object.values(expressions).filter((e) => e.morphTargetName).length, [expressions])
+
+  const busyLabel = loading ? 'モデルを解析しています…' : exporting ? 'VRMを生成しています…' : null
+
+  return (
+    <div className="flex h-screen flex-col bg-[#0b0c10] text-slate-100">
+      <header className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-violet-400" />
+          <div>
+            <h1 className="text-sm font-semibold leading-tight">AI Auto VRM Maker</h1>
+            <p className="text-xs text-slate-400">3Dモデルをアップロードするだけ</p>
+          </div>
+        </div>
+        {model && (
+          <button
+            type="button"
+            onClick={handleReset}
+            className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
+          >
+            別のモデルを読み込む
+          </button>
+        )}
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <aside className="w-64 shrink-0 overflow-y-auto border-r border-slate-800 p-3">
+          {model ? (
+            <ModelInfoPanel model={model} judgement={humanoidJudgement} pose={pose} />
+          ) : (
+            <p className="text-sm text-slate-500">モデルを読み込むと情報がここに表示されます。</p>
+          )}
+        </aside>
+
+        <main className="flex min-w-0 flex-1 flex-col">
+          {model ? (
+            <>
+              <ViewerControls
+                onSetView={viewer.setView}
+                bonesVisible={viewer.bonesVisible}
+                onToggleBones={viewer.setBonesVisible}
+                disabled={!!previewVrm}
+              />
+              <div className="min-h-0 flex-1">
+                <ModelViewer
+                  ref={viewer.viewerRef}
+                  scene={displayScene}
+                  bones={displayBones}
+                  bonesVisible={viewer.bonesVisible}
+                  selectedBoneNode={viewer.selectedBoneNode}
+                  onBoneClick={viewer.handleBoneClick}
+                />
+              </div>
+              {viewer.selectedBone && (
+                <div className="border-t border-slate-800 bg-slate-900/80 px-4 py-2 text-xs text-slate-300">
+                  選択中のボーン: <span className="font-medium text-slate-100">{viewer.selectedBone.name}</span>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-1 items-center justify-center p-8">
+              <div className="w-full max-w-xl">
+                <ModelUploader loading={loading} onFileSelected={handleFileSelected} />
+                {error && <p className="mt-3 text-center text-sm text-red-400">{error}</p>}
+              </div>
+            </div>
+          )}
+        </main>
+
+        {model && (
+          <aside className="w-80 shrink-0 space-y-4 overflow-y-auto border-l border-slate-800 p-3">
+            {!model.hasBones ? (
+              <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                <p>このモデルにはボーンがありません。</p>
+                <p className="text-xs opacity-80">[AI自動リギングを準備中]</p>
+              </div>
+            ) : (
+              <>
+                {mapping && (
+                  <HumanoidPanel
+                    mapping={mapping}
+                    bones={bones}
+                    onChange={setManualMapping}
+                    onReset={resetToAuto}
+                    onHoverBone={viewer.setHoveredBoneNode}
+                  />
+                )}
+                {validation && <ValidationPanel result={validation} />}
+                <MetadataPanel metadata={metadata} onChange={setMetadata} />
+                <ExpressionPanel expressions={expressions} morphTargets={model.morphTargets} onChange={setExpressionMorphTarget} />
+                <SpringBonePanel chains={springChains} onAutoDetect={autoSpringBones} onClear={clearSpringBones} disabled={bones.length === 0} />
+                <ExportPanel
+                  canExport={!!validation && validation.status !== 'error' && !exporting}
+                  exporting={exporting}
+                  exportReady={!!exportedBlob}
+                  summary={{
+                    mappedRequiredCount,
+                    totalRequiredCount: requiredNames.length,
+                    expressionCount,
+                    springChainCount: springChains.length,
+                  }}
+                  onExport={handleExport}
+                  onDownload={handleDownload}
+                />
+              </>
+            )}
+          </aside>
+        )}
+      </div>
+
+      <ProgressBar steps={steps} busyLabel={busyLabel} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+    </div>
+  )
+}
+
+export default App
