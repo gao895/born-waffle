@@ -5,6 +5,15 @@ import { normalizeBoneName } from '../utils/normalizeBoneName'
 
 const loader = new GLTFLoader()
 
+const TEXTURE_MAP_KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap', 'alphaMap'] as const
+
+// AI-generated models (Tripo, Meshy, etc.) commonly ship 4096x4096 textures.
+// Decoding a couple of those on a phone's constrained GPU/memory budget is a
+// common cause of the tab crashing or the model silently failing to appear,
+// so on-load we shrink anything above a device-appropriate ceiling.
+const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+const MAX_TEXTURE_SIZE = IS_MOBILE ? 1024 : 2048
+
 export class UnsupportedFormatError extends Error {}
 
 /** Loads a .glb/.gltf File into a LoadedModel with derived statistics. */
@@ -29,6 +38,7 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
 
   const scene = gltf.scene
   scene.updateMatrixWorld(true)
+  downscaleOversizedTextures(scene)
 
   const { stats, skeleton, morphTargets, hasBones } = analyzeScene(scene, gltf.animations)
 
@@ -90,7 +100,7 @@ function analyzeScene(
       for (const mat of meshMaterials) {
         if (!mat) continue
         materials.add(mat)
-        for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap'] as const) {
+        for (const key of TEXTURE_MAP_KEYS) {
           const tex = (mat as unknown as Record<string, THREE.Texture | undefined>)[key]
           if (tex) textures.add(tex)
         }
@@ -133,6 +143,52 @@ function analyzeScene(
   return { stats, skeleton, morphTargets, hasBones: boneCount > 0 }
 }
 
+/**
+ * Shrinks any texture wider or taller than MAX_TEXTURE_SIZE by redrawing it
+ * onto a smaller canvas. Skips textures already within budget and never
+ * processes the same texture twice (materials commonly share one).
+ */
+function downscaleOversizedTextures(scene: THREE.Object3D): void {
+  const seen = new Set<THREE.Texture>()
+
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh) return
+
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      for (const key of TEXTURE_MAP_KEYS) {
+        const tex = (mat as unknown as Record<string, THREE.Texture | undefined>)[key]
+        if (tex && !seen.has(tex)) {
+          seen.add(tex)
+          downscaleTexture(tex)
+        }
+      }
+    }
+  })
+}
+
+function downscaleTexture(texture: THREE.Texture): void {
+  const image = texture.image as { width?: number; height?: number; close?: () => void } | undefined
+  const width = image?.width ?? 0
+  const height = image?.height ?? 0
+  if (!image || width <= MAX_TEXTURE_SIZE || height <= MAX_TEXTURE_SIZE) return
+
+  const scale = MAX_TEXTURE_SIZE / Math.max(width, height)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width * scale))
+  canvas.height = Math.max(1, Math.round(height * scale))
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.drawImage(image as CanvasImageSource, 0, 0, canvas.width, canvas.height)
+
+  texture.image = canvas
+  texture.needsUpdate = true
+  image.close?.()
+}
+
 /** Fully releases GPU resources held by a previously loaded model's scene graph. */
 export function disposeModel(scene: THREE.Object3D | null | undefined): void {
   if (!scene) return
@@ -151,7 +207,7 @@ export function disposeModel(scene: THREE.Object3D | null | undefined): void {
 
 function disposeMaterial(material: THREE.Material | undefined): void {
   if (!material) return
-  for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap', 'alphaMap'] as const) {
+  for (const key of TEXTURE_MAP_KEYS) {
     const tex = (material as unknown as Record<string, THREE.Texture | undefined>)[key]
     tex?.dispose()
   }

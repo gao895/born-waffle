@@ -151,8 +151,8 @@ function App() {
         )}
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-64 shrink-0 overflow-y-auto border-r border-slate-800 p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+        <aside className="order-2 w-full shrink-0 border-b border-slate-800 p-3 lg:order-none lg:w-64 lg:overflow-y-auto lg:border-b-0 lg:border-r">
           {model ? (
             <ModelInfoPanel model={model} judgement={humanoidJudgement} pose={pose} />
           ) : (
@@ -160,7 +160,7 @@ function App() {
           )}
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="order-1 flex min-w-0 flex-1 flex-col lg:order-none">
           {model ? (
             <>
               <ViewerControls
@@ -169,7 +169,7 @@ function App() {
                 onToggleBones={viewer.setBonesVisible}
                 disabled={!!previewVrm}
               />
-              <div className="min-h-0 flex-1">
+              <div className="h-[50vh] min-h-[320px] shrink-0 lg:h-auto lg:min-h-0 lg:flex-1">
                 <ModelViewer
                   ref={viewer.viewerRef}
                   scene={displayScene}
@@ -196,7 +196,7 @@ function App() {
         </main>
 
         {model && (
-          <aside className="w-80 shrink-0 space-y-4 overflow-y-auto border-l border-slate-800 p-3">
+          <aside className="order-3 w-full shrink-0 space-y-4 border-t border-slate-800 p-3 lg:order-none lg:w-80 lg:overflow-y-auto lg:border-t-0 lg:border-l">
             {!model.hasBones ? (
               <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
                 <p>このモデルにはボーンがありません。</p>
