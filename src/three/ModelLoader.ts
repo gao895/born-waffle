@@ -10,9 +10,10 @@ const TEXTURE_MAP_KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'e
 // AI-generated models (Tripo, Meshy, etc.) commonly ship 4096x4096 textures.
 // Decoding a couple of those on a phone's constrained GPU/memory budget is a
 // common cause of the tab crashing or the model silently failing to appear,
-// so on-load we shrink anything above a device-appropriate ceiling.
-const IS_MOBILE = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-const MAX_TEXTURE_SIZE = IS_MOBILE ? 1024 : 2048
+// so on-load we shrink anything above this ceiling. 2048 is supported by
+// effectively every WebGL-capable device (desktop and mobile alike), so we
+// don't need a separate, more aggressive mobile-only cap.
+const MAX_TEXTURE_SIZE = 2048
 
 export class UnsupportedFormatError extends Error {}
 
@@ -38,7 +39,7 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
 
   const scene = gltf.scene
   scene.updateMatrixWorld(true)
-  downscaleOversizedTextures(scene)
+  await downscaleOversizedTextures(scene)
 
   const { stats, skeleton, morphTargets, hasBones } = analyzeScene(scene, gltf.animations)
 
@@ -144,12 +145,18 @@ function analyzeScene(
 }
 
 /**
- * Shrinks any texture wider or taller than MAX_TEXTURE_SIZE by redrawing it
- * onto a smaller canvas. Skips textures already within budget and never
- * processes the same texture twice (materials commonly share one).
+ * Shrinks any texture wider AND taller than MAX_TEXTURE_SIZE using the
+ * browser's native `createImageBitmap` resize path (hardware-accelerated,
+ * and avoids running the image through a 2D canvas's color-management
+ * pipeline, which can shift colors for JPEGs with an embedded, non-sRGB
+ * ICC profile - common in AI-generated textures). Skips textures already
+ * within budget and never processes the same texture twice (materials
+ * commonly share one). Any failure leaves the original texture untouched -
+ * full quality but no memory savings is a better fallback than a broken one.
  */
-function downscaleOversizedTextures(scene: THREE.Object3D): void {
+async function downscaleOversizedTextures(scene: THREE.Object3D): Promise<void> {
   const seen = new Set<THREE.Texture>()
+  const pending: Promise<void>[] = []
 
   scene.traverse((obj) => {
     const mesh = obj as THREE.Mesh
@@ -162,31 +169,37 @@ function downscaleOversizedTextures(scene: THREE.Object3D): void {
         const tex = (mat as unknown as Record<string, THREE.Texture | undefined>)[key]
         if (tex && !seen.has(tex)) {
           seen.add(tex)
-          downscaleTexture(tex)
+          pending.push(downscaleTexture(tex))
         }
       }
     }
   })
+
+  await Promise.all(pending)
 }
 
-function downscaleTexture(texture: THREE.Texture): void {
+async function downscaleTexture(texture: THREE.Texture): Promise<void> {
   const image = texture.image as { width?: number; height?: number; close?: () => void } | undefined
   const width = image?.width ?? 0
   const height = image?.height ?? 0
-  if (!image || width <= MAX_TEXTURE_SIZE || height <= MAX_TEXTURE_SIZE) return
+  if (!image || (width <= MAX_TEXTURE_SIZE && height <= MAX_TEXTURE_SIZE)) return
 
   const scale = MAX_TEXTURE_SIZE / Math.max(width, height)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(width * scale))
-  canvas.height = Math.max(1, Math.round(height * scale))
+  const targetWidth = Math.max(1, Math.round(width * scale))
+  const targetHeight = Math.max(1, Math.round(height * scale))
 
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  ctx.drawImage(image as CanvasImageSource, 0, 0, canvas.width, canvas.height)
-
-  texture.image = canvas
-  texture.needsUpdate = true
-  image.close?.()
+  try {
+    const resized = await createImageBitmap(image as ImageBitmapSource, {
+      resizeWidth: targetWidth,
+      resizeHeight: targetHeight,
+      resizeQuality: 'high',
+    })
+    texture.image = resized
+    texture.needsUpdate = true
+    image.close?.()
+  } catch (err) {
+    console.warn('[ModelLoader] テクスチャの縮小に失敗したため、元のサイズのまま使用します。', err)
+  }
 }
 
 /** Fully releases GPU resources held by a previously loaded model's scene graph. */
