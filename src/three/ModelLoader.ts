@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { LoadedModel, ModelStats, MorphTargetInfo } from '../types/model'
+import { shrinkOversizedGlbImages } from './GlbImagePreprocessor'
 import { normalizeBoneName } from '../utils/normalizeBoneName'
 
 const loader = new GLTFLoader()
@@ -26,7 +27,8 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
     )
   }
 
-  const arrayBuffer = await file.arrayBuffer()
+  const rawArrayBuffer = await file.arrayBuffer()
+  const arrayBuffer = await shrinkOversizedGlbImages(rawArrayBuffer)
 
   const gltf = await new Promise<GLTF>((resolve, reject) => {
     loader.parse(
