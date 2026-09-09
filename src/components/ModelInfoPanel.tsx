@@ -85,6 +85,28 @@ export function ModelInfoPanel({ model, judgement, pose }: ModelInfoPanelProps) 
           姿勢: <span className="font-medium">{POSE_LABEL[pose]}</span>として認識しました
         </div>
       )}
+
+      {model.textureLoadWarning && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{model.textureLoadWarning}</p>
+        </div>
+      )}
+
+      {model.textureDiagnosticsLog.length > 0 && (
+        <details className="rounded-lg border border-slate-800">
+          <summary className="cursor-pointer select-none px-2 py-1.5 text-xs text-slate-400">
+            テクスチャ処理ログ（サポート用）
+          </summary>
+          <ul className="space-y-1 p-2 text-xs text-slate-400">
+            {model.textureDiagnosticsLog.map((line, i) => (
+              <li key={i} className="break-words">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   )
 }

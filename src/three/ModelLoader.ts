@@ -28,11 +28,11 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
   }
 
   const rawArrayBuffer = await file.arrayBuffer()
-  const arrayBuffer = await shrinkOversizedGlbImages(rawArrayBuffer)
+  const preprocessed = await shrinkOversizedGlbImages(rawArrayBuffer)
 
   const gltf = await new Promise<GLTF>((resolve, reject) => {
     loader.parse(
-      arrayBuffer,
+      preprocessed.buffer,
       '',
       (result) => resolve(result),
       (error) => reject(error),
@@ -45,6 +45,11 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
 
   const { stats, skeleton, morphTargets, hasBones } = analyzeScene(scene, gltf.animations)
 
+  const textureLoadWarning =
+    preprocessed.embeddedImageCount > 0 && stats.textureCount === 0
+      ? `このモデルには画像が${preprocessed.embeddedImageCount}枚含まれていますが、テクスチャの読み込みに失敗しました。お使いの端末のメモリ制約が原因の可能性があります。`
+      : null
+
   return {
     fileName: file.name,
     fileSize: file.size,
@@ -54,6 +59,8 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
     morphTargets,
     animations: gltf.animations ?? [],
     hasBones,
+    textureLoadWarning,
+    textureDiagnosticsLog: preprocessed.log,
   }
 }
 

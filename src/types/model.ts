@@ -31,4 +31,8 @@ export interface LoadedModel {
   morphTargets: MorphTargetInfo[]
   animations: THREE.AnimationClip[]
   hasBones: boolean
+  /** Set when the source file declared embedded textures but none ended up attached to any material. */
+  textureLoadWarning: string | null
+  /** Full step-by-step trace from the pre-load image shrink pass, for on-device diagnostics. */
+  textureDiagnosticsLog: string[]
 }

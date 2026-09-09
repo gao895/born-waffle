@@ -70,7 +70,9 @@ function App() {
         pushToast('error', 'モデルの読み込みに失敗しました。')
         return
       }
-      if (!loaded.hasBones) {
+      if (loaded.textureLoadWarning) {
+        pushToast('warning', loaded.textureLoadWarning)
+      } else if (!loaded.hasBones) {
         pushToast('warning', 'このモデルにはボーンがありません。AI自動リギングは現在準備中です。')
       } else {
         pushToast('success', 'モデルを解析しました。')
