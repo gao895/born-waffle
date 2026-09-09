@@ -125,8 +125,12 @@ export class SceneManager {
     const boneSet = new Set(boneNodes)
 
     for (const bone of boneNodes) {
-      const material = new THREE.MeshBasicMaterial({ color: 0x60a5fa })
+      // Bones normally sit inside the mesh (under armor plates, clothing, etc.), so draw
+      // markers/lines through the model - an "X-ray" overlay - rather than letting opaque
+      // geometry hide them, which otherwise makes correctly-placed bones look missing.
+      const material = new THREE.MeshBasicMaterial({ color: 0x60a5fa, depthTest: false, depthWrite: false })
       const marker = new THREE.Mesh(geometry, material)
+      marker.renderOrder = 999
       marker.userData.boneNode = bone
       marker.userData.boneName = bone.name
       bone.getWorldPosition(marker.position)
@@ -147,8 +151,15 @@ export class SceneManager {
       const parent = bone.parent
       if (parent && boneSet.has(parent)) {
         const lineGeometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()])
-        const lineMaterial = new THREE.LineBasicMaterial({ color: 0x93c5fd, transparent: true, opacity: 0.85 })
+        const lineMaterial = new THREE.LineBasicMaterial({
+          color: 0x93c5fd,
+          transparent: true,
+          opacity: 0.85,
+          depthTest: false,
+          depthWrite: false,
+        })
         const line = new THREE.Line(lineGeometry, lineMaterial)
+        line.renderOrder = 998
         line.matrixAutoUpdate = false
         line.frustumCulled = false
 
