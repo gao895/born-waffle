@@ -31,7 +31,7 @@ Node.js 20以降を推奨します。
 
 - 入力: `.glb`, `.gltf`（Skeleton/SkinnedMeshを含むモデルを想定）
 - 出力: `.vrm`（VRM 1.0）
-- ボーンを持たないモデルも読み込み自体は可能ですが、V1では自動リギングは行わず「準備中」の案内を表示します（後述のロードマップ参照）
+- ボーンを持たないモデルも読み込み可能で、「AIで自動リギングする」から形状ベースのヒューリスティックによる自動ボーン生成を試せます（後述の「自動リギングの説明」参照。完全な精度は保証されないβ機能です）
 
 `.fbx` / `.obj` / `.vrm` の入力対応は将来のロードマップです。
 
@@ -54,7 +54,7 @@ src/
 - `three/SpringBoneManager.ts`: Humanoidに属さない末端ボーンチェーンの検出（SpringBone候補）
 - `three/VRMBuilder.ts` / `VRMExporter.ts`: VRM 1.0の拡張データ組み立てとglTF拡張としての書き出し（後述）
 - `three/VRMValidator.ts`: 必須Humanoidボーンのチェック
-- `three/RiggingProvider.ts`: 将来のAI自動リギング（V2）用の抽象インターフェース（未実装のプレースホルダー）
+- `three/RiggingProvider.ts` + `AutoRigger.ts`: ボーンなしモデル向けの自動リギング抽象インターフェースと、その現行実装（形状ヒューリスティック、後述）
 
 ## 自動ボーンマッピングの説明
 
@@ -92,26 +92,24 @@ src/
 
 MToonマテリアル（VRM独自のトゥーンシェーダー）の書き出しは行っていません。入力モデルは標準的なPBRマテリアル（MeshStandardMaterial等）を想定しており、そのままglTF標準のマテリアルとして書き出されます。
 
-## 今後AIリギングを追加する方法（V2以降）
+## 自動リギング（ボーンなしモデル）の説明
 
-ボーンを持たないモデルに対する自動リギング（姿勢推定 → スケルトン生成 → スキニング → Humanoidマッピング）はV1のスコープ外です。`three/RiggingProvider.ts` に将来の差し替え用インターフェースを用意してあります。
+ボーンを持たないモデルは、右パネルの「AIで自動リギングする」から自動でHumanoidボーンを生成できます（`three/AutoRigger.ts` の `HeuristicRiggingProvider`）。姿勢推定AIやメッシュセグメンテーション（Pinocchio/RigNet等の研究分野）を使った「本物の」自動リギングではなく、**シルエット形状に基づくヒューリスティック**です:
 
-```ts
-interface RiggingProvider {
-  detectSkeleton(scene): Promise<THREE.Skeleton | null>
-  generateSkeleton(scene): Promise<THREE.Skeleton>
-  skinMesh(scene, skeleton): Promise<void>
-  mapHumanoid(scene, skeleton): Promise<HumanoidMappingTable>
-}
-```
+1. 全頂点のワールド座標をサンプリングし、バウンディングボックスを取得
+2. 標準的な人体プロポーション（8頭身相当の高さ比率）を仮定して、腰・背骨・胸・首・頭を高さ方向に配置
+3. 腰より下の頂点X分布から「脚の間の隙間」を検出し、左右の脚位置を推定（隙間が見つからない場合はスカート等とみなし、中心から均等オフセット）
+4. 肩幅と胴体幅を比較し、Tポーズ（腕を横に伸ばす）か腕を下げた姿勢かを判定して、それぞれに応じた腕ボーンを配置
+5. 各頂点を、最も近いボーン線分（点と線分の最短距離）に基づいて上位2ボーンへスキンウェイトを割り当て（線形ブレンド）
+6. 生成したボーンはVRM Humanoidの正式名称（`hips`, `leftUpperArm`等）で命名するため、既存の`BoneDetector`/`HumanoidMapper`パイプラインがそのまま高信頼度でマッチする
 
-MediaPipe等によるポーズ推定や外部Auto Rigging APIを使う実装をこのインターフェースに沿って追加し、`hasBones === false` のモデルに対して呼び出すことで拡張できます。
+**既知の限界**: 腕が複雑なポーズ（体に密着、武器を握る等）の場合や、脚がスカート等で完全に隠れている場合は、ボーン位置がずれることがあります。生成後は「詳細設定」から手動でボーンを再割り当てできます。将来的にMediaPipe等の姿勢推定AIや外部Auto Rigging APIに差し替える場合は、`three/RiggingProvider.ts` の `RiggingProvider` インターフェース（`detectSkeleton` / `generateSkeleton` / `skinMesh` / `mapHumanoid`）に沿って新しい実装を追加するだけで済みます。
 
 ## ロードマップ
 
-- **V1（現在）**: 既存Skeletonを持つGLB/GLTFのHumanoid自動マッピング → VRM 1.0書き出し
-- **V2**: ボーンなしモデルへのAI自動リギング（姿勢推定・スケルトン生成・スキニング）
-- **V3**: Tポーズ化・自動ウェイト・表情・SpringBoneまでの完全自動化
+- **V1**: 既存Skeletonを持つGLB/GLTFのHumanoid自動マッピング → VRM 1.0書き出し
+- **V2（現在）**: ボーンなしモデルへの自動リギング（形状ヒューリスティック、上記参照）
+- **V3**: 姿勢推定AIによる高精度リギング・Tポーズ化・自動ウェイト改善・表情・SpringBoneまでの完全自動化
 - **V4**: メタバース向け最適化（ポリゴン削減・テクスチャ圧縮・VRM軽量化）
 
 その他、FBX/OBJ/VRM入力対応、VRM0/VRM1切り替え、アニメーションプレビュー、Lip Sync等は将来検討事項です。

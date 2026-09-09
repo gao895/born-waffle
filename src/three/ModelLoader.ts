@@ -70,6 +70,18 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
   }
 }
 
+/**
+ * Re-derives a LoadedModel's stats/skeleton/hasBones after the scene graph
+ * was mutated in place (e.g. by HeuristicRiggingProvider adding bones and
+ * converting meshes to SkinnedMesh). Keeps everything else - file info,
+ * texture diagnostics - from the original model.
+ */
+export function reanalyzeModel(model: LoadedModel): LoadedModel {
+  model.scene.updateMatrixWorld(true)
+  const { stats, skeleton, morphTargets, hasBones } = analyzeScene(model.scene, model.animations)
+  return { ...model, stats, skeleton, morphTargets, hasBones }
+}
+
 function analyzeScene(
   scene: THREE.Group,
   animations: THREE.AnimationClip[],

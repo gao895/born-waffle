@@ -1,6 +1,7 @@
 import type { VRM } from '@pixiv/three-vrm'
 import { Sparkles } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
+import { AutoRigPanel } from './components/AutoRigPanel'
 import { ExportPanel } from './components/ExportPanel'
 import { ExpressionPanel } from './components/ExpressionPanel'
 import { HumanoidPanel } from './components/HumanoidPanel'
@@ -33,7 +34,7 @@ const STEP_LABELS: Record<PipelineStep, string> = {
 let toastSeq = 0
 
 function App() {
-  const { model, loading, error, loadFile, reset } = useModel()
+  const { model, loading, error, loadFile, reset, autoRigging, autoRigError, runAutoRig } = useModel()
   const { bones, mapping, humanoidJudgement, pose, setManualMapping, resetToAuto } = useSkeleton(model)
   const {
     metadata,
@@ -73,13 +74,22 @@ function App() {
       if (loaded.textureLoadWarning) {
         pushToast('warning', loaded.textureLoadWarning)
       } else if (!loaded.hasBones) {
-        pushToast('warning', 'このモデルにはボーンがありません。AI自動リギングは現在準備中です。')
+        pushToast('warning', 'このモデルにはボーンがありません。AIで自動リギングできます。')
       } else {
         pushToast('success', 'モデルを解析しました。')
       }
     },
     [loadFile, pushToast],
   )
+
+  const handleAutoRig = useCallback(async () => {
+    const errorMessage = await runAutoRig()
+    if (errorMessage) {
+      pushToast('error', errorMessage)
+    } else {
+      pushToast('success', 'AI自動リギングが完了しました。ボーン設定を確認してください。')
+    }
+  }, [runAutoRig, pushToast])
 
   const handleReset = useCallback(() => {
     reset()
@@ -130,7 +140,13 @@ function App() {
   )
   const expressionCount = useMemo(() => Object.values(expressions).filter((e) => e.morphTargetName).length, [expressions])
 
-  const busyLabel = loading ? 'モデルを解析しています…' : exporting ? 'VRMを生成しています…' : null
+  const busyLabel = loading
+    ? 'モデルを解析しています…'
+    : autoRigging
+      ? 'AIがボーンを自動生成しています…'
+      : exporting
+        ? 'VRMを生成しています…'
+        : null
 
   return (
     <div className="flex h-screen flex-col bg-[#0b0c10] text-slate-100">
@@ -200,10 +216,7 @@ function App() {
         {model && (
           <aside className="order-3 w-full shrink-0 space-y-4 border-t border-slate-800 p-3 lg:order-none lg:w-80 lg:overflow-y-auto lg:border-t-0 lg:border-l">
             {!model.hasBones ? (
-              <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
-                <p>このモデルにはボーンがありません。</p>
-                <p className="text-xs opacity-80">[AI自動リギングを準備中]</p>
-              </div>
+              <AutoRigPanel autoRigging={autoRigging} autoRigError={autoRigError} onRunAutoRig={handleAutoRig} />
             ) : (
               <>
                 {mapping && (
