@@ -84,10 +84,25 @@ function simplifyMeshGeometry(geometry: THREE.BufferGeometry, targetTriangleCoun
       : identityIndex(position.count)
 
   const targetIndexCount = Math.min(indices.length, targetTriangleCount * 3)
-  // target_error of 1 (the maximum) tells meshopt to prioritize hitting the requested
-  // triangle count over preserving shape fidelity - appropriate here since the goal is
-  // meeting a hard external platform limit, not producing the highest-quality LOD.
-  const [newIndices] = MeshoptSimplifier.simplify(indices, positions, 3, targetIndexCount, 1, [])
+
+  // Many exported models pack several logically separate parts (body, armor
+  // plates, a held weapon, a chain) into one merged mesh/vertex buffer. With
+  // no error ceiling, simplify() is free to collapse an edge on one part
+  // into a spatially-close vertex on an unrelated part, stitching a long
+  // "bridge" triangle between them - this is what turned the held weapon
+  // into a warped, seemingly attached-to-the-arm mess after a first attempt
+  // that used target_error=1 (no limit). LockBorder keeps every boundary
+  // edge (an edge used by only one triangle - exactly the seam around a
+  // disconnected part) fixed in place, so simplification stays within each
+  // part instead of bridging across them. We still need real reduction, so
+  // raise the error ceiling only as far as necessary to hit the target
+  // count, trying the smallest (most shape-preserving) value first.
+  let newIndices: Uint32Array | Uint16Array = indices
+  for (const targetError of [0.01, 0.05, 0.1, 0.2, 0.4, 0.7, 1]) {
+    const [result] = MeshoptSimplifier.simplify(indices, positions, 3, targetIndexCount, targetError, ['LockBorder'])
+    newIndices = result
+    if (newIndices.length <= targetIndexCount) break
+  }
 
   geometry.setIndex(new THREE.BufferAttribute(newIndices, 1))
   return newIndices.length / 3
