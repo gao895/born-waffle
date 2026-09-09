@@ -2,9 +2,15 @@ import * as THREE from 'three'
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { LoadedModel, ModelStats, MorphTargetInfo } from '../types/model'
 import { shrinkOversizedGlbImages } from './GlbImagePreprocessor'
+import { SafeDataUriImageLoader } from './SafeDataUriImageLoader'
 import { normalizeBoneName } from '../utils/normalizeBoneName'
 
-const loader = new GLTFLoader()
+// GLTFLoader's default image loading fetches a blob: URL before decoding it;
+// see GlbImagePreprocessor.ts for why that's replaced with a fetch-free
+// data: URI loader for every embedded image.
+const loadingManager = new THREE.LoadingManager()
+loadingManager.addHandler(/^data:/i, new SafeDataUriImageLoader())
+const loader = new GLTFLoader(loadingManager)
 
 const TEXTURE_MAP_KEYS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap', 'alphaMap'] as const
 

@@ -1,27 +1,29 @@
 /**
- * Shrinks oversized images embedded inside a binary .glb file *before* it
- * ever reaches GLTFLoader.
+ * Rewrites a binary .glb's embedded images into `data:` URIs (shrinking
+ * anything oversized along the way) before it ever reaches GLTFLoader.
  *
- * Why this exists: GLTFLoader decodes every embedded image at full
- * resolution, and if that decode fails for any reason (out-of-memory on a
- * constrained mobile device is the common one for 4096x4096+ AI-generated
- * textures), it silently swallows the error and resolves the texture as
- * `null` (see GLTFLoader's `loadTextureImage`, which wraps the load in
- * `.catch(() => null)`). The model still "loads successfully" - just
- * completely untextured, with no error anywhere for the app to react to.
+ * The actual, confirmed root cause (see on-device diagnostics from a real
+ * report): GLTFLoader loads a bufferView-embedded image by wrapping its
+ * bytes in a Blob, turning that into a `blob:` object URL, and then
+ * fetching that URL (`fetch(blobUrl).then(r => r.blob())`, see
+ * ImageBitmapLoader.load in three.js) before decoding it. On at least one
+ * real device (inside the Claude iOS app's embedded WebView), that
+ * `fetch()` call on a `blob:` URL fails outright - confirmed by the fact
+ * that our own pre-shrink pass, which decodes the exact same bytes with
+ * `createImageBitmap` directly from an in-memory Blob (no `fetch`, no
+ * object URL), succeeds every time on that same device, while GLTFLoader's
+ * own load of the (now small) result still silently resolves to no
+ * texture. `.catch(() => null)` in GLTFLoader's `loadTextureImage` means
+ * this never surfaces as an error - the model just ends up untextured.
  *
- * Downscaling textures *after* GLTFLoader has already parsed them (see
- * `downscaleOversizedTextures` in ModelLoader.ts) can't help here, because
- * the failure happens during GLTFLoader's own decode, before that code
- * ever runs. The only way to prevent it is to make sure GLTFLoader never
- * has to decode a huge image in the first place - so we rewrite the GLB's
- * embedded image bytes down to a safe size first.
- *
- * Each image gets its own retry ladder of progressively smaller target
- * sizes, and a failure on one image never aborts processing of the others -
- * every step logs what happened so a failure that reaches production can
- * actually be diagnosed instead of just reappearing as an unexplained blank
- * texture.
+ * `data:` URIs sidestep the whole blob-registry/fetch path: they're
+ * self-contained strings, not a per-document object reference, so fetching
+ * one doesn't depend on the same browser/session state that a `blob:` URL
+ * does. Every embedded image - not just oversized ones - is inlined as a
+ * `data:` URI here, and ModelLoader additionally registers a custom
+ * LoadingManager handler (see `createSafeGltfLoader`) that decodes `data:`
+ * URIs directly via Blob + `createImageBitmap`, skipping `fetch()`
+ * entirely, for the same reason.
  */
 
 const SIZE_LADDER = [2048, 1024, 512, 256, 128] as const
@@ -29,8 +31,7 @@ const SIZE_LADDER = [2048, 1024, 512, 256, 128] as const
 // What actually has to fit in memory/on the wire is the encoded byte size,
 // not the pixel dimensions - a detailed normal map can still be several MB
 // as a lossless PNG at "only" 2048x2048. If a resize attempt is still this
-// large, we treat it as not good enough and fall through to a smaller size
-// rather than risk the exact same failure GLTFLoader would have hit anyway.
+// large, we treat it as not good enough and fall through to a smaller size.
 const MAX_OUTPUT_BYTES = 1_500_000
 
 interface GltfBufferView {
@@ -69,14 +70,14 @@ export interface GlbPreprocessResult {
 export async function shrinkOversizedGlbImages(arrayBuffer: ArrayBuffer): Promise<GlbPreprocessResult> {
   const log: string[] = []
   try {
-    return await shrinkOversizedGlbImagesUnsafe(arrayBuffer, log)
+    return await inlineGlbImagesUnsafe(arrayBuffer, log)
   } catch (err) {
-    log.push(`事前縮小処理全体でエラーが発生したため、元のファイルをそのまま読み込みます: ${describeError(err)}`)
+    log.push(`事前処理全体でエラーが発生したため、元のファイルをそのまま読み込みます: ${describeError(err)}`)
     return { buffer: arrayBuffer, log, embeddedImageCount: 0 }
   }
 }
 
-async function shrinkOversizedGlbImagesUnsafe(arrayBuffer: ArrayBuffer, log: string[]): Promise<GlbPreprocessResult> {
+async function inlineGlbImagesUnsafe(arrayBuffer: ArrayBuffer, log: string[]): Promise<GlbPreprocessResult> {
   const noop = (embeddedImageCount = 0): GlbPreprocessResult => ({ buffer: arrayBuffer, log, embeddedImageCount })
 
   if (arrayBuffer.byteLength < 20) return noop()
@@ -104,70 +105,60 @@ async function shrinkOversizedGlbImagesUnsafe(arrayBuffer: ArrayBuffer, log: str
   const images = json.images ?? []
   const bufferViews = json.bufferViews ?? []
   const embeddedImageCount = images.filter((i) => i.bufferView !== undefined).length
-  if (images.length === 0 || bufferViews.length === 0) return noop(embeddedImageCount)
-  if ((json.buffers?.length ?? 0) !== 1) {
-    log.push('複数バッファのGLBのため、事前縮小をスキップします。')
-    return noop(embeddedImageCount)
-  }
+  if (embeddedImageCount === 0) return noop(embeddedImageCount)
 
-  const appended: ArrayBuffer[] = []
   let didRewrite = false
 
   for (let i = 0; i < images.length; i++) {
     const image = images[i]
-    if (image.bufferView === undefined) continue // external/data-URI image, not embedded in this chunk
+    if (image.bufferView === undefined) continue // external/data-URI image already
     const bufferView = bufferViews[image.bufferView]
-    if (!bufferView || bufferView.buffer !== 0) continue
+    if (!bufferView) continue
 
     const mimeType = image.mimeType
-    if (mimeType !== 'image/png' && mimeType !== 'image/jpeg') {
-      log.push(`画像${i}: 対応していない形式 (${mimeType ?? '不明'}) のため縮小をスキップします。`)
-      continue
-    }
-
     const byteOffset = bufferView.byteOffset ?? 0
-    const bytes = originalBin.slice(byteOffset, byteOffset + bufferView.byteLength)
-    const dimensions = readImageDimensions(bytes, mimeType)
-    if (!dimensions) {
-      log.push(`画像${i}: サイズ情報を読み取れませんでした (${(bufferView.byteLength / 1024).toFixed(0)}KB)。`)
-      continue
+    let bytes = originalBin.slice(byteOffset, byteOffset + bufferView.byteLength)
+    let outMimeType = mimeType ?? 'application/octet-stream'
+
+    if (mimeType === 'image/png' || mimeType === 'image/jpeg') {
+      const dimensions = readImageDimensions(bytes, mimeType)
+      if (dimensions && Math.max(dimensions.width, dimensions.height) > SIZE_LADDER[0]) {
+        const resized = await resizeImageBytesWithRetry(bytes, mimeType, dimensions, i, log)
+        if (resized) {
+          bytes = resized.bytes
+          outMimeType = resized.mimeType
+        }
+      } else {
+        log.push(`画像${i}: ${dimensions ? `${dimensions.width}x${dimensions.height}` : '(サイズ不明)'} は縮小不要のため、そのままdata URI化します。`)
+      }
+    } else {
+      log.push(`画像${i}: 形式 (${mimeType ?? '不明'}) はそのままdata URI化します。`)
     }
 
-    const maxSide = Math.max(dimensions.width, dimensions.height)
-    if (maxSide <= SIZE_LADDER[0]) {
-      log.push(`画像${i}: ${dimensions.width}x${dimensions.height} は縮小不要です。`)
-      continue
-    }
-
-    const result = await resizeImageBytesWithRetry(bytes, mimeType, dimensions, i, log)
-    if (!result) continue
-
-    const newByteOffset = originalBin.byteLength + appended.reduce((sum, b) => sum + alignTo4(b.byteLength), 0)
-    appended.push(result.bytes)
-    bufferViews.push({ buffer: 0, byteOffset: newByteOffset, byteLength: result.bytes.byteLength })
-    image.bufferView = bufferViews.length - 1
-    image.mimeType = result.mimeType
+    image.uri = `data:${outMimeType};base64,${arrayBufferToBase64(bytes)}`
+    image.mimeType = outMimeType
+    image.bufferView = undefined
     didRewrite = true
   }
 
   if (!didRewrite) return noop(embeddedImageCount)
 
-  const totalBinLength = originalBin.byteLength + appended.reduce((sum, b) => sum + alignTo4(b.byteLength), 0)
-  const newBin = new Uint8Array(totalBinLength)
-  newBin.set(new Uint8Array(originalBin), 0)
-  let cursor = originalBin.byteLength
-  for (const chunk of appended) {
-    newBin.set(new Uint8Array(chunk), cursor)
-    cursor += alignTo4(chunk.byteLength)
-  }
-
-  json.buffers![0].byteLength = newBin.byteLength
-
-  return { buffer: packGlb(json, newBin.buffer), log, embeddedImageCount }
+  // The binary chunk (mesh/skin/animation data) is untouched - only the
+  // JSON's `images[]` entries changed, from bufferView references to
+  // self-contained data URIs. Leftover unused bufferView entries for the
+  // old image bytes are harmless dead references.
+  return { buffer: packGlb(json, originalBin), log, embeddedImageCount }
 }
 
-function alignTo4(byteLength: number): number {
-  return Math.ceil(byteLength / 4) * 4
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return btoa(binary)
 }
 
 function describeError(err: unknown): string {
@@ -209,15 +200,12 @@ interface ResizedImage {
 /**
  * Tries each size in SIZE_LADDER (skipping ones not smaller than the
  * source) until one produces an output small enough to trust, trying two
- * independent decode strategies at each size: `createImageBitmap`
- * (preferred - can decode-at-reduced-resolution instead of decoding full
- * size then downscaling) and a plain `<img>` element (a completely
- * different, more universally-supported code path, in case
- * `createImageBitmap` itself is the thing failing rather than the image
- * size). A successful decode that still comes out larger than
- * MAX_OUTPUT_BYTES (common for detailed PNG normal maps even at 2048px) is
- * treated as not good enough, and we fall through to a smaller size rather
- * than risk the same failure GLTFLoader would hit anyway.
+ * independent decode strategies at each size: `createImageBitmap` and a
+ * plain `<img>` element, both fed the bytes directly via an in-memory Blob
+ * (never a `fetch()` or object URL - see the module doc comment for why).
+ * A successful decode that still comes out larger than MAX_OUTPUT_BYTES
+ * (common for detailed PNG normal maps even at 2048px) is treated as not
+ * good enough, and we fall through to a smaller size.
  */
 async function resizeImageBytesWithRetry(
   bytes: ArrayBuffer,
@@ -275,23 +263,6 @@ async function resizeImageBytesWithRetry(
   return null
 }
 
-/** Re-encodes as JPEG when the source has no transparency to preserve - PNG's lossless compression is a poor fit for detailed textures like normal maps. */
-async function encodeSmallestCanvas(canvas: HTMLCanvasElement, originalMimeType: 'image/png' | 'image/jpeg'): Promise<ResizedImage> {
-  const outputMimeType = originalMimeType === 'image/png' && !canvasHasTransparency(canvas) ? 'image/jpeg' : originalMimeType
-  const bytes = await canvasToArrayBuffer(canvas, outputMimeType)
-  return { bytes, mimeType: outputMimeType }
-}
-
-function canvasHasTransparency(canvas: HTMLCanvasElement): boolean {
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return true // can't check - assume it might need alpha, safer to keep PNG
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] < 255) return true
-  }
-  return false
-}
-
 async function decodeToCanvasViaImageBitmap(blob: Blob, targetWidth: number, targetHeight: number): Promise<HTMLCanvasElement> {
   const bitmap = await createImageBitmap(blob, {
     resizeWidth: targetWidth,
@@ -333,12 +304,33 @@ async function decodeToCanvasViaImageElement(blob: Blob, targetWidth: number, ta
   }
 }
 
+/** Re-encodes as JPEG when the source has no transparency to preserve - PNG's lossless compression is a poor fit for detailed textures like normal maps. */
+async function encodeSmallestCanvas(canvas: HTMLCanvasElement, originalMimeType: 'image/png' | 'image/jpeg'): Promise<ResizedImage> {
+  const outputMimeType = originalMimeType === 'image/png' && !canvasHasTransparency(canvas) ? 'image/jpeg' : originalMimeType
+  const bytes = await canvasToArrayBuffer(canvas, outputMimeType)
+  return { bytes, mimeType: outputMimeType }
+}
+
+function canvasHasTransparency(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return true // can't check - assume it might need alpha, safer to keep PNG
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) return true
+  }
+  return false
+}
+
 async function canvasToArrayBuffer(canvas: HTMLCanvasElement, mimeType: string): Promise<ArrayBuffer> {
   const blob = await new Promise<Blob | null>((resolve) => {
     canvas.toBlob(resolve, mimeType, mimeType === 'image/jpeg' ? 0.92 : undefined)
   })
   if (!blob) throw new Error('canvas.toBlob が結果を返しませんでした')
   return blob.arrayBuffer()
+}
+
+function alignTo4(byteLength: number): number {
+  return Math.ceil(byteLength / 4) * 4
 }
 
 function packGlb(json: GltfJson, bin: ArrayBuffer): ArrayBuffer {
