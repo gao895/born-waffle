@@ -34,6 +34,7 @@ export class SceneManager {
 
   private boneMarkersGroup = new THREE.Group()
   private boneMarkers: THREE.Mesh[] = []
+  private boneLines: THREE.Line[] = []
   private highlightedMarker: THREE.Mesh | null = null
   private raycaster = new THREE.Raycaster()
   private pointer = new THREE.Vector2()
@@ -121,6 +122,7 @@ export class SceneManager {
   private buildBoneMarkers(boneNodes: THREE.Object3D[]): void {
     const markerRadius = Math.max(this.modelRadius * 0.012, 0.005)
     const geometry = new THREE.SphereGeometry(markerRadius, 8, 8)
+    const boneSet = new Set(boneNodes)
 
     for (const bone of boneNodes) {
       const material = new THREE.MeshBasicMaterial({ color: 0x60a5fa })
@@ -139,6 +141,32 @@ export class SceneManager {
 
       this.boneMarkersGroup.add(marker)
       this.boneMarkers.push(marker)
+
+      // One "stick" per bone connecting it to its parent bone, so the skeleton reads as a
+      // connected figure rather than a scatter of disconnected joints.
+      const parent = bone.parent
+      if (parent && boneSet.has(parent)) {
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()])
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0x93c5fd, transparent: true, opacity: 0.85 })
+        const line = new THREE.Line(lineGeometry, lineMaterial)
+        line.matrixAutoUpdate = false
+        line.frustumCulled = false
+
+        const positionAttr = lineGeometry.getAttribute('position') as THREE.BufferAttribute
+        const updateLine = () => {
+          const a = parent.getWorldPosition(new THREE.Vector3())
+          const b = bone.getWorldPosition(new THREE.Vector3())
+          positionAttr.setXYZ(0, a.x, a.y, a.z)
+          positionAttr.setXYZ(1, b.x, b.y, b.z)
+          positionAttr.needsUpdate = true
+          lineGeometry.computeBoundingSphere()
+        }
+        line.onBeforeRender = updateLine
+        updateLine()
+
+        this.boneMarkersGroup.add(line)
+        this.boneLines.push(line)
+      }
     }
   }
 
@@ -147,8 +175,13 @@ export class SceneManager {
       marker.geometry.dispose()
       ;(marker.material as THREE.Material).dispose()
     }
+    for (const line of this.boneLines) {
+      line.geometry.dispose()
+      ;(line.material as THREE.Material).dispose()
+    }
     this.boneMarkersGroup.clear()
     this.boneMarkers = []
+    this.boneLines = []
     this.highlightedMarker = null
   }
 
