@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { HeuristicRiggingProvider } from '../three/AutoRigger'
 import { disposeModel, loadModelFile, reanalyzeModel } from '../three/ModelLoader'
+import { reduceTriangleCount } from '../three/PolygonReducer'
 import type { LoadedModel } from '../types/model'
 
 export interface UseModelResult {
@@ -13,6 +14,10 @@ export interface UseModelResult {
   autoRigError: string | null
   /** Resolves to `null` on success, or the error message on failure. */
   runAutoRig: () => Promise<string | null>
+  reducingPolygons: boolean
+  reduceError: string | null
+  /** Resolves to `null` on success, or the error message on failure. */
+  runPolygonReduction: (targetTriangleCount: number) => Promise<string | null>
 }
 
 /** Owns the currently loaded model and guarantees the previous one is disposed before it's replaced. */
@@ -22,6 +27,8 @@ export function useModel(): UseModelResult {
   const [error, setError] = useState<string | null>(null)
   const [autoRigging, setAutoRigging] = useState(false)
   const [autoRigError, setAutoRigError] = useState<string | null>(null)
+  const [reducingPolygons, setReducingPolygons] = useState(false)
+  const [reduceError, setReduceError] = useState<string | null>(null)
   const currentSceneRef = useRef<LoadedModel['scene'] | null>(null)
   const modelRef = useRef<LoadedModel | null>(null)
 
@@ -52,6 +59,7 @@ export function useModel(): UseModelResult {
     setModel(null)
     setError(null)
     setAutoRigError(null)
+    setReduceError(null)
   }, [])
 
   const runAutoRig = useCallback(async (): Promise<string | null> => {
@@ -78,5 +86,39 @@ export function useModel(): UseModelResult {
     }
   }, [])
 
-  return { model, loading, error, loadFile, reset, autoRigging, autoRigError, runAutoRig }
+  const runPolygonReduction = useCallback(async (targetTriangleCount: number): Promise<string | null> => {
+    const current = modelRef.current
+    if (!current) return 'モデルが読み込まれていません。'
+
+    setReducingPolygons(true)
+    setReduceError(null)
+    try {
+      await reduceTriangleCount(current.scene, targetTriangleCount)
+      const updated = reanalyzeModel(current)
+      modelRef.current = updated
+      setModel(updated)
+      return null
+    } catch (err) {
+      console.error('[useModel] polygon reduction failed', err)
+      const message = err instanceof Error ? err.message : 'ポリゴン数の削減に失敗しました。'
+      setReduceError(message)
+      return message
+    } finally {
+      setReducingPolygons(false)
+    }
+  }, [])
+
+  return {
+    model,
+    loading,
+    error,
+    loadFile,
+    reset,
+    autoRigging,
+    autoRigError,
+    runAutoRig,
+    reducingPolygons,
+    reduceError,
+    runPolygonReduction,
+  }
 }

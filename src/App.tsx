@@ -9,6 +9,7 @@ import { MetadataPanel } from './components/MetadataPanel'
 import { ModelInfoPanel } from './components/ModelInfoPanel'
 import { ModelUploader } from './components/ModelUploader'
 import { ModelViewer } from './components/ModelViewer'
+import { PolygonReductionPanel } from './components/PolygonReductionPanel'
 import { ProgressBar } from './components/ProgressBar'
 import { SpringBonePanel } from './components/SpringBonePanel'
 import { ToastStack } from './components/Toast'
@@ -34,7 +35,19 @@ const STEP_LABELS: Record<PipelineStep, string> = {
 let toastSeq = 0
 
 function App() {
-  const { model, loading, error, loadFile, reset, autoRigging, autoRigError, runAutoRig } = useModel()
+  const {
+    model,
+    loading,
+    error,
+    loadFile,
+    reset,
+    autoRigging,
+    autoRigError,
+    runAutoRig,
+    reducingPolygons,
+    reduceError,
+    runPolygonReduction,
+  } = useModel()
   const { bones, mapping, humanoidJudgement, pose, setManualMapping, resetToAuto } = useSkeleton(model)
   const {
     metadata,
@@ -91,6 +104,18 @@ function App() {
     }
   }, [runAutoRig, pushToast])
 
+  const handleReducePolygons = useCallback(
+    async (targetTriangleCount: number) => {
+      const errorMessage = await runPolygonReduction(targetTriangleCount)
+      if (errorMessage) {
+        pushToast('error', errorMessage)
+      } else {
+        pushToast('success', 'ポリゴン数を削減しました。')
+      }
+    },
+    [runPolygonReduction, pushToast],
+  )
+
   const handleReset = useCallback(() => {
     reset()
     setExportedBlob(null)
@@ -144,9 +169,11 @@ function App() {
     ? 'モデルを解析しています…'
     : autoRigging
       ? 'AIがボーンを自動生成しています…'
-      : exporting
-        ? 'VRMを生成しています…'
-        : null
+      : reducingPolygons
+        ? 'ポリゴン数を削減しています…'
+        : exporting
+          ? 'VRMを生成しています…'
+          : null
 
   return (
     <div className="flex h-screen flex-col bg-[#0b0c10] text-slate-100">
@@ -215,6 +242,12 @@ function App() {
 
         {model && (
           <aside className="order-3 w-full shrink-0 space-y-4 border-t border-slate-800 p-3 lg:order-none lg:w-80 lg:overflow-y-auto lg:border-t-0 lg:border-l">
+            <PolygonReductionPanel
+              triangleCount={model.stats.triangleCount}
+              reducing={reducingPolygons}
+              reduceError={reduceError}
+              onReduce={handleReducePolygons}
+            />
             {!model.hasBones ? (
               <AutoRigPanel autoRigging={autoRigging} autoRigError={autoRigError} onRunAutoRig={handleAutoRig} />
             ) : (
