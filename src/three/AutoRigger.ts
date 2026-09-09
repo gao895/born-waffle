@@ -54,6 +54,20 @@ export class HeuristicRiggingProvider implements RiggingProvider {
     const shoulderHalfWidth = Math.max((shoulderSlab.maxX - shoulderSlab.minX) / 2, torsoHalfWidth)
     const armsExtended = shoulderHalfWidth > torsoHalfWidth * 1.6
 
+    // Points that could plausibly belong to an arm, in a Y band from hip to neck height
+    // (wide enough to cover both a hanging arm and one bent up toward the chest, but
+    // clear of the head/helmet above and the legs below). A flared skirt/tabard hem can
+    // extend farther from the body's central axis than a single global "torso radius"
+    // threshold would allow for, so classifyArmCandidates compares each point against the
+    // body's actual silhouette *at that same height* instead of one fixed radius - a wide
+    // skirt is the majority of points at hip height (so it reads as "core body" there),
+    // while a sleeve/hand sticking out is a minority at its height and reads as "arm".
+    const armBandPoints = classifyArmCandidates(
+      points.filter((p) => p.y >= yAt(0.4) && p.y <= yAt(0.8)),
+      centerX,
+      centerZ,
+    )
+
     const root = new THREE.Group()
     root.name = 'Armature'
     scene.add(root)
@@ -78,22 +92,46 @@ export class HeuristicRiggingProvider implements RiggingProvider {
     for (const side of ['left', 'right'] as const) {
       const sign = side === 'left' ? 1 : -1 // +X assumed viewer's left in glTF/VRM convention; side detection elsewhere handles mislabeling via HumanoidMapper anyway
       const shoulderX = centerX + sign * torsoHalfWidth * 0.9
-      const shoulder = makeBone(`${side}Shoulder`, upperChest, new THREE.Vector3(shoulderX, yAt(0.78), centerZ))
+      const shoulderPos = new THREE.Vector3(shoulderX, yAt(0.78), centerZ)
+      const otherShoulderPos = new THREE.Vector3(centerX - sign * torsoHalfWidth * 0.9, yAt(0.78), centerZ)
+      const shoulder = makeBone(`${side}Shoulder`, upperChest, shoulderPos)
 
-      if (armsExtended) {
+      // A held weapon, a hand resting on the chest, an arm bent at the elbow rather than
+      // hanging straight or held out in a T-pose - the fixed-formula fallbacks below only
+      // cover a straight arm, so first try to trace the actual bent shape from the mesh's
+      // own points on this side: the farthest point from the shoulder is a good proxy for
+      // the hand regardless of pose, and the point that deviates most from the
+      // shoulder-to-hand line (away from either end, where a real elbow bend would be) is
+      // a good proxy for the elbow.
+      const sidePoints = armBandPoints.filter((p) => p.distanceTo(shoulderPos) < p.distanceTo(otherShoulderPos))
+      const bentChain = sidePoints.length >= 12 ? estimateBentArmChain(sidePoints, shoulderPos) : null
+
+      let upperArmPos: THREE.Vector3
+      let lowerArmPos: THREE.Vector3
+      let handPos: THREE.Vector3
+
+      if (bentChain) {
+        upperArmPos = shoulderPos.clone()
+        lowerArmPos = bentChain.elbow
+        handPos = bentChain.hand
+      } else if (armsExtended) {
         const armSpan = shoulderHalfWidth - torsoHalfWidth * 0.5
         const upperArmX = centerX + sign * (torsoHalfWidth * 0.5 + armSpan * 0.35)
         const lowerArmX = centerX + sign * (torsoHalfWidth * 0.5 + armSpan * 0.7)
         const handX = centerX + sign * shoulderHalfWidth
-        const upperArm = makeBone(`${side}UpperArm`, shoulder, new THREE.Vector3(upperArmX, yAt(0.78), centerZ))
-        const lowerArm = makeBone(`${side}LowerArm`, upperArm, new THREE.Vector3(lowerArmX, yAt(0.78), centerZ))
-        makeBone(`${side}Hand`, lowerArm, new THREE.Vector3(handX, yAt(0.78), centerZ))
+        upperArmPos = new THREE.Vector3(upperArmX, yAt(0.78), centerZ)
+        lowerArmPos = new THREE.Vector3(lowerArmX, yAt(0.78), centerZ)
+        handPos = new THREE.Vector3(handX, yAt(0.78), centerZ)
       } else {
         const armX = centerX + sign * torsoHalfWidth * 1.05
-        const upperArm = makeBone(`${side}UpperArm`, shoulder, new THREE.Vector3(armX, yAt(0.78), centerZ))
-        const lowerArm = makeBone(`${side}LowerArm`, upperArm, new THREE.Vector3(armX, yAt(0.62), centerZ))
-        makeBone(`${side}Hand`, lowerArm, new THREE.Vector3(armX, yAt(0.47), centerZ))
+        upperArmPos = new THREE.Vector3(armX, yAt(0.78), centerZ)
+        lowerArmPos = new THREE.Vector3(armX, yAt(0.62), centerZ)
+        handPos = new THREE.Vector3(armX, yAt(0.47), centerZ)
       }
+
+      const upperArm = makeBone(`${side}UpperArm`, shoulder, upperArmPos)
+      const lowerArm = makeBone(`${side}LowerArm`, upperArm, lowerArmPos)
+      makeBone(`${side}Hand`, lowerArm, handPos)
 
       const legX = side === 'left' ? legs.leftX : legs.rightX
       const upperLeg = makeBone(`${side}UpperLeg`, hips, new THREE.Vector3(legX, yAt(0.48), centerZ))
@@ -186,6 +224,89 @@ function sampleWorldVertices(meshes: THREE.Mesh[]): THREE.Vector3[] {
     }
   }
   return points
+}
+
+/**
+ * Splits points into ~10 horizontal bands and, within each band, flags a point as an "arm
+ * candidate" only if it sits well beyond that band's own radial spread (70th percentile of
+ * distance from the central axis) - not a single global threshold. This is what lets a
+ * flared skirt/tabard hem (the majority of points at hip height, so it reads as "core body"
+ * there) stay excluded, while a sleeve or hand sticking out (a minority at its height) is
+ * correctly picked up as an arm point, regardless of how wide the garment is elsewhere.
+ */
+function classifyArmCandidates(points: THREE.Vector3[], centerX: number, centerZ: number): THREE.Vector3[] {
+  if (points.length === 0) return []
+
+  const BAND_COUNT = 10
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const p of points) {
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+  const span = Math.max(maxY - minY, 1e-6)
+
+  const bands: THREE.Vector3[][] = Array.from({ length: BAND_COUNT }, () => [])
+  for (const p of points) {
+    const idx = THREE.MathUtils.clamp(Math.floor(((p.y - minY) / span) * BAND_COUNT), 0, BAND_COUNT - 1)
+    bands[idx].push(p)
+  }
+
+  const candidates: THREE.Vector3[] = []
+  for (const band of bands) {
+    if (band.length < 6) continue
+    const radii = band.map((p) => Math.hypot(p.x - centerX, p.z - centerZ)).sort((a, b) => a - b)
+    const localRadius = radii[Math.floor(radii.length * 0.7)]
+    const threshold = localRadius * 1.15
+    for (const p of band) {
+      if (Math.hypot(p.x - centerX, p.z - centerZ) > threshold) candidates.push(p)
+    }
+  }
+  return candidates
+}
+
+/**
+ * Approximates a bent 2-segment arm (shoulder -> elbow -> hand) from a raw point cloud
+ * with no mesh connectivity info. The hand is taken as the point farthest from the
+ * shoulder, which holds regardless of whether the arm hangs down, reaches out, or bends
+ * in toward the chest. The elbow is the point that deviates most from the straight
+ * shoulder-hand line - restricted to the middle portion of that line so a noisy vertex
+ * right next to the shoulder or hand doesn't get mistaken for the bend. Returns null when
+ * the point set is degenerate (e.g. everything coincides with the shoulder).
+ */
+function estimateBentArmChain(points: THREE.Vector3[], shoulder: THREE.Vector3): { elbow: THREE.Vector3; hand: THREE.Vector3 } | null {
+  const hand = farthestPoint(points, shoulder)
+  const toHand = hand.clone().sub(shoulder)
+  const lengthSq = toHand.lengthSq()
+  if (lengthSq < 1e-8) return null
+
+  let elbow: THREE.Vector3 | null = null
+  let bestDeviation = -Infinity
+  for (const p of points) {
+    const t = THREE.MathUtils.clamp(p.clone().sub(shoulder).dot(toHand) / lengthSq, 0, 1)
+    if (t < 0.2 || t > 0.8) continue
+    const onLine = shoulder.clone().addScaledVector(toHand, t)
+    const deviation = p.distanceTo(onLine)
+    if (deviation > bestDeviation) {
+      bestDeviation = deviation
+      elbow = p
+    }
+  }
+
+  return { elbow: elbow ?? shoulder.clone().lerp(hand, 0.5), hand }
+}
+
+function farthestPoint(points: THREE.Vector3[], from: THREE.Vector3): THREE.Vector3 {
+  let best = points[0]
+  let bestDist = -Infinity
+  for (const p of points) {
+    const d = p.distanceTo(from)
+    if (d > bestDist) {
+      bestDist = d
+      best = p
+    }
+  }
+  return best
 }
 
 function slabExtent(points: THREE.Vector3[], yMin: number, yMax: number): { minX: number; maxX: number; pointsInSlab: THREE.Vector3[] } {
