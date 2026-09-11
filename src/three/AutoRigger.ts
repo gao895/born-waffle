@@ -269,6 +269,12 @@ function buildBoneSegments(bones: THREE.Bone[]): BoneSegment[] {
   })
 }
 
+function boneSide(name: string): 'left' | 'right' | null {
+  if (name.startsWith('left')) return 'left'
+  if (name.startsWith('right')) return 'right'
+  return null
+}
+
 function pointToSegmentDistance(point: THREE.Vector3, start: THREE.Vector3, end: THREE.Vector3): number {
   const ab = end.clone().sub(start)
   const lengthSq = ab.lengthSq()
@@ -293,19 +299,32 @@ function convertToSkinnedMesh(mesh: THREE.Mesh, segments: BoneSegment[]): THREE.
 
     let bestIdx = -1
     let bestDist = Infinity
-    let secondIdx = -1
-    let secondDist = Infinity
-
     for (const seg of segments) {
       const d = pointToSegmentDistance(world, seg.start, seg.end)
       if (d < bestDist) {
-        secondIdx = bestIdx
-        secondDist = bestDist
-        bestIdx = seg.index
         bestDist = d
-      } else if (d < secondDist) {
-        secondIdx = seg.index
+        bestIdx = seg.index
+      }
+    }
+
+    // In a bind T-pose the two feet (or two hands, if arms hang close to the body) can sit
+    // only centimeters apart, closer to each other than to their own knee/elbow further up
+    // the limb. Left/right are never legitimately blended anatomically, so once the nearest
+    // bone is known, the second candidate is restricted to that same side (or a side-less
+    // torso/spine bone) - otherwise a vertex near, say, the left foot can end up partly
+    // weighted to the right foot bone, and the two feet visibly merge/stretch together the
+    // moment the legs move apart from the bind pose.
+    const bestSide = boneSide(segments[bestIdx].bone.name)
+    let secondIdx = -1
+    let secondDist = Infinity
+    for (const seg of segments) {
+      if (seg.index === bestIdx) continue
+      const side = boneSide(seg.bone.name)
+      if (bestSide && side && side !== bestSide) continue
+      const d = pointToSegmentDistance(world, seg.start, seg.end)
+      if (d < secondDist) {
         secondDist = d
+        secondIdx = seg.index
       }
     }
 
@@ -313,11 +332,12 @@ function convertToSkinnedMesh(mesh: THREE.Mesh, segments: BoneSegment[]): THREE.
     // length of a limb, not just near the joint - under linear blend skinning that makes
     // the whole limb pinch inward and look thinner than the source mesh the moment a bone
     // rotates away from the bind pose (the "candy wrapper" effect), which is very visible
-    // once a viewer (e.g. cluster) re-poses the arm from this heuristic's T-pose bind.
-    // Raising the falloff to an inverse-cube power concentrates weight much more sharply
-    // on the nearest bone, so blending stays confined to a narrow band right at the joint
-    // and each limb segment stays close to rigidly bound to its own bone everywhere else.
-    const WEIGHT_FALLOFF_POWER = 3
+    // once a viewer (e.g. cluster) re-poses the arm from this heuristic's T-pose bind. An
+    // inverse-square falloff is a middle ground: sharper than plain inverse-distance (so a
+    // limb still stays close to rigidly bound to its own bone away from any joint) while
+    // still leaving a soft-enough transition right at a joint that adjacent bones rotating
+    // by different amounts (e.g. shoulder vs. upperArm) don't tear into a visible seam.
+    const WEIGHT_FALLOFF_POWER = 2
     const w1 = 1 / Math.pow(bestDist + EPSILON, WEIGHT_FALLOFF_POWER)
     const w2 = secondIdx >= 0 ? 1 / Math.pow(secondDist + EPSILON, WEIGHT_FALLOFF_POWER) : 0
     const wSum = w1 + w2
