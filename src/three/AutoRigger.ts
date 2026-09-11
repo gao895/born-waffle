@@ -309,8 +309,17 @@ function convertToSkinnedMesh(mesh: THREE.Mesh, segments: BoneSegment[]): THREE.
       }
     }
 
-    const w1 = 1 / (bestDist + EPSILON)
-    const w2 = secondIdx >= 0 ? 1 / (secondDist + EPSILON) : 0
+    // A plain inverse-distance falloff (power 1) blends two bones over almost the entire
+    // length of a limb, not just near the joint - under linear blend skinning that makes
+    // the whole limb pinch inward and look thinner than the source mesh the moment a bone
+    // rotates away from the bind pose (the "candy wrapper" effect), which is very visible
+    // once a viewer (e.g. cluster) re-poses the arm from this heuristic's T-pose bind.
+    // Raising the falloff to an inverse-cube power concentrates weight much more sharply
+    // on the nearest bone, so blending stays confined to a narrow band right at the joint
+    // and each limb segment stays close to rigidly bound to its own bone everywhere else.
+    const WEIGHT_FALLOFF_POWER = 3
+    const w1 = 1 / Math.pow(bestDist + EPSILON, WEIGHT_FALLOFF_POWER)
+    const w2 = secondIdx >= 0 ? 1 / Math.pow(secondDist + EPSILON, WEIGHT_FALLOFF_POWER) : 0
     const wSum = w1 + w2
 
     skinIndex[i * 4] = bestIdx
