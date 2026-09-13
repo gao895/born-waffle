@@ -103,6 +103,8 @@ export class HeuristicRiggingProvider implements RiggingProvider {
     }
 
     scene.updateMatrixWorld(true)
+    addAccessoryChains(points, bones, centerX, height, makeBone)
+    scene.updateMatrixWorld(true)
 
     const boneList = [...bones.values()]
     return new THREE.Skeleton(boneList)
@@ -239,6 +241,106 @@ function splitLeftRight(points: THREE.Vector3[], centerX: number): { leftX: numb
   // No clear split - treat as a single merged leg silhouette (e.g. a dress) and offset a little either side of center.
   const offset = Math.max(totalWidth * 0.15, 0.05)
   return { leftX: centerX + offset, rightX: centerX - offset }
+}
+
+const ACCESSORY_MIN_POINTS = 24
+const ACCESSORY_DISTANCE_FACTOR = 0.12
+const ACCESSORY_JOINTS = 3
+const ACCESSORY_MAX_CHAINS = 6
+
+/**
+ * The 21-bone humanoid skeleton only explains a roughly cylindrical body -
+ * anything hanging well clear of it (a veil off the wrist, a headscarf, a
+ * flared skirt panel) is currently skinned to whichever core bone happens to
+ * be nearest, so it just rotates rigidly with the body and can never sway.
+ * This adds extra bone chains for those dangling regions, parented under
+ * the core bone they hang from but *not* part of the Humanoid mapping
+ * (BoneDetector/HumanoidMapper only ever matches the fixed VRM bone names) -
+ * which is exactly the shape `SpringBoneManager.autoDetectSpringBoneChains`
+ * looks for (an unmapped bone chain hanging off a mapped one), so "SpringBone
+ * を自動設定" picks these up with no changes needed on that side at all.
+ */
+function addAccessoryChains(
+  points: THREE.Vector3[],
+  bones: Map<string, THREE.Bone>,
+  centerX: number,
+  height: number,
+  makeBone: (name: string, parent: THREE.Object3D, worldPos: THREE.Vector3) => THREE.Bone,
+): void {
+  const coreSegments = buildBoneSegments([...bones.values()])
+  const threshold = height * ACCESSORY_DISTANCE_FACTOR
+
+  const unexplained: { point: THREE.Vector3; nearestBone: THREE.Bone }[] = []
+  for (const p of points) {
+    let minDist = Infinity
+    for (const seg of coreSegments) {
+      const d = pointToSegmentDistance(p, seg.start, seg.end)
+      if (d < minDist) minDist = d
+    }
+    if (minDist < threshold) continue
+
+    let nearestBone: THREE.Bone | null = null
+    let nearestDist = Infinity
+    for (const seg of coreSegments) {
+      const d = p.distanceTo(seg.start)
+      if (d < nearestDist) {
+        nearestDist = d
+        nearestBone = seg.bone
+      }
+    }
+    if (nearestBone) unexplained.push({ point: p, nearestBone })
+  }
+
+  const buckets = new Map<string, { attachBone: THREE.Bone; side: 'left' | 'right' | null; points: THREE.Vector3[] }>()
+  for (const { point, nearestBone } of unexplained) {
+    const attachSide = boneSide(nearestBone.name)
+    // A bone with no inherent side (head, hips, chest, ...) can still have two
+    // distinct dangling pieces either side of the body (e.g. a slit skirt) -
+    // split those by which side of the midline the point falls on so they get
+    // independent chains instead of being merged into one that only sways
+    // toward whichever side happens to average out on top.
+    const side = attachSide ?? (point.x > centerX + height * 0.02 ? 'left' : point.x < centerX - height * 0.02 ? 'right' : null)
+    const key = `${nearestBone.name}:${side ?? 'center'}`
+    let bucket = buckets.get(key)
+    if (!bucket) {
+      bucket = { attachBone: nearestBone, side, points: [] }
+      buckets.set(key, bucket)
+    }
+    bucket.points.push(point)
+  }
+
+  const sortedBuckets = [...buckets.values()]
+    .filter((b) => b.points.length >= ACCESSORY_MIN_POINTS)
+    .sort((a, b) => b.points.length - a.points.length)
+    .slice(0, ACCESSORY_MAX_CHAINS)
+
+  sortedBuckets.forEach((bucket, chainIndex) => {
+    const attachPos = new THREE.Vector3().setFromMatrixPosition(bucket.attachBone.matrixWorld)
+    const tip = farthestPoint(bucket.points, attachPos)
+    if (tip.distanceTo(attachPos) < 1e-4) return
+
+    const prefix = bucket.side ?? 'center'
+    const chainName = `${prefix}Dangling${chainIndex}`
+
+    let parent: THREE.Object3D = bucket.attachBone
+    for (let j = 1; j <= ACCESSORY_JOINTS; j++) {
+      const jointPos = attachPos.clone().lerp(tip, j / ACCESSORY_JOINTS)
+      parent = makeBone(`${chainName}_${j}`, parent, jointPos)
+    }
+  })
+}
+
+function farthestPoint(points: THREE.Vector3[], from: THREE.Vector3): THREE.Vector3 {
+  let best = points[0]
+  let bestDist = -Infinity
+  for (const p of points) {
+    const d = p.distanceTo(from)
+    if (d > bestDist) {
+      bestDist = d
+      best = p
+    }
+  }
+  return best
 }
 
 function setWorldPosition(bone: THREE.Bone, worldPos: THREE.Vector3): void {

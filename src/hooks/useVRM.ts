@@ -16,11 +16,17 @@ export function useVRM(model: LoadedModel | null, mapping: HumanoidMappingTable 
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
 
+  // Auto-rigging and polygon reduction mutate the same scene in place and return a new
+  // `model` object wrapping it (see reanalyzeModel), so `model` itself is a new reference
+  // every time - keying this reset on `model` would wipe out metadata/expressions/spring
+  // bones the user just configured the moment they, say, reduce the polygon count
+  // afterward. `model.scene` is the one thing that's the same instance across those
+  // in-place updates and only actually changes when a genuinely different file is loaded.
   useEffect(() => {
     setMetadata(DEFAULT_VRM_METADATA)
     setSpringChains([])
     setExpressions(model ? mapExpressions(model.morphTargets) : {})
-  }, [model])
+  }, [model?.scene])
 
   const setExpressionMorphTarget = useCallback((preset: string, morphTargetName: string | null) => {
     setExpressions((prev) => ({
