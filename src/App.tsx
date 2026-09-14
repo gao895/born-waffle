@@ -57,6 +57,8 @@ function App() {
     springChains,
     autoSpringBones,
     clearSpringBones,
+    format,
+    setFormat,
     validation,
     exporting,
     exportError,
@@ -275,6 +277,8 @@ function App() {
                     expressionCount,
                     springChainCount: springChains.length,
                   }}
+                  format={format}
+                  onFormatChange={setFormat}
                   onExport={handleExport}
                   onDownload={handleDownload}
                 />

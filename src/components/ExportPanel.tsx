@@ -1,4 +1,5 @@
 import { Download, Loader2, Sparkles } from 'lucide-react'
+import type { VRMFormat } from '../hooks/useVRM'
 
 interface ExportSummary {
   mappedRequiredCount: number
@@ -12,11 +13,13 @@ interface ExportPanelProps {
   exporting: boolean
   exportReady: boolean
   summary: ExportSummary
+  format: VRMFormat
+  onFormatChange: (format: VRMFormat) => void
   onExport: () => void
   onDownload: () => void
 }
 
-export function ExportPanel({ canExport, exporting, exportReady, summary, onExport, onDownload }: ExportPanelProps) {
+export function ExportPanel({ canExport, exporting, exportReady, summary, format, onFormatChange, onExport, onDownload }: ExportPanelProps) {
   return (
     <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">書き出し前の確認</h3>
@@ -27,6 +30,24 @@ export function ExportPanel({ canExport, exporting, exportReady, summary, onExpo
         <li>表情設定: {summary.expressionCount} 個</li>
         <li>ゆれもの設定: {summary.springChainCount} 個</li>
       </ul>
+
+      <div>
+        <span className="mb-1 block text-xs text-slate-400">VRMバージョン</span>
+        <div className="flex gap-1.5">
+          {(['1.0', '0.x'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onFormatChange(v)}
+              className={`flex-1 rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                format === v ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              VRM {v}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <button
         type="button"

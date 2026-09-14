@@ -116,14 +116,20 @@ VRChat・clusterなどのメタバースプラットフォームには、アッ�
 
 複数メッシュがある場合は、全体の目標三角形数に対する各メッシュの現在の比率に応じて、メッシュごとに目標値を按分して削減します。
 
+## VRMバージョンの選択（1.0 / 0.x）
+
+書き出しパネルで VRM 1.0 と VRM 0.x を切り替えられます。両者はスキーマがかなり異なる（拡張名が `VRMC_vrm`/`VRMC_springBone` と `VRM` で別、Humanoidボーンが辞書と配列、表情が `expressions.preset/custom` と `blendShapeMaster.blendShapeGroups`、SpringBoneが `springs`（全ジョイント列挙）と `secondaryAnimation.boneGroups`（各チェーンのルートのみ指定しランタイムが子ボーンを辿る）等）ため、`three/VRMBuilder0.ts` / `three/VRMExporter0.ts` として VRM 1.0 側（`VRMBuilder.ts` / `VRMExporter.ts`）とは独立に実装しています。表情プリセット名もVRM1（`aa`/`happy`/`surprised`等）とVRM0（`a`/`joy`等、`surprised`に相当するプリセットが存在しない）で対応が取れないものがあり、対応するVRM0プリセットがない場合は `unknown`（カスタム）グループとして書き出します。
+
+VRM0はモデルの正面が+Z（VRM1の-Z基準とは逆）を向いている前提の仕様ですが、本アプリの3Dビューア・カメラは既に+Zを正面として扱っているため、VRM0書き出し時に追加の回転補正は行っていません。
+
 ## ロードマップ
 
 - **V1**: 既存Skeletonを持つGLB/GLTFのHumanoid自動マッピング → VRM 1.0書き出し
 - **V2**: ボーンなしモデルへの自動リギング（形状ヒューリスティック、上記参照）
 - **V3**: 姿勢推定AIによる高精度リギング・Tポーズ化・自動ウェイト改善・表情・SpringBoneまでの完全自動化
-- **V4（現在）**: メタバース向け最適化（ポリゴン削減 ← 実装済み・上記参照／テクスチャ圧縮・VRM軽量化は今後）
+- **V4（現在）**: メタバース向け最適化（ポリゴン削減・VRM0/VRM1切り替え ← 実装済み・上記参照／テクスチャ圧縮・VRM軽量化は今後）
 
-その他、FBX/OBJ/VRM入力対応、VRM0/VRM1切り替え、アニメーションプレビュー、Lip Sync等は将来検討事項です。
+その他、FBX/OBJ/VRM入力対応、アニメーションプレビュー、Lip Sync等は将来検討事項です。
 
 ## 使用ライブラリ
 

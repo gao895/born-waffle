@@ -3,16 +3,21 @@ import { autoDetectSpringBoneChains } from '../three/SpringBoneManager'
 import { mapExpressions } from '../three/MorphTargetAnalyzer'
 import { buildVRMData } from '../three/VRMBuilder'
 import { exportVRM } from '../three/VRMExporter'
+import { buildVRM0Data } from '../three/VRMBuilder0'
+import { exportVRM0 } from '../three/VRMExporter0'
 import { validateHumanoidMapping } from '../three/VRMValidator'
 import type { BoneCandidate, HumanoidMappingTable } from '../types/humanoid'
 import type { LoadedModel } from '../types/model'
 import { DEFAULT_VRM_METADATA } from '../types/vrm'
 import type { ExpressionMapping, SpringBoneChainConfig, VRMMetadata } from '../types/vrm'
 
+export type VRMFormat = '1.0' | '0.x'
+
 export function useVRM(model: LoadedModel | null, mapping: HumanoidMappingTable | null, bones: BoneCandidate[]) {
   const [metadata, setMetadata] = useState<VRMMetadata>(DEFAULT_VRM_METADATA)
   const [expressions, setExpressions] = useState<Record<string, ExpressionMapping>>({})
   const [springChains, setSpringChains] = useState<SpringBoneChainConfig[]>([])
+  const [format, setFormat] = useState<VRMFormat>('1.0')
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
 
@@ -55,6 +60,17 @@ export function useVRM(model: LoadedModel | null, mapping: HumanoidMappingTable 
     setExporting(true)
     setExportError(null)
     try {
+      if (format === '0.x') {
+        const data = buildVRM0Data({
+          humanoidMapping: mapping,
+          metadata,
+          expressions,
+          morphTargets: model.morphTargets,
+          springBoneChains: springChains,
+          allBones: bones,
+        })
+        return await exportVRM0(model.scene, data)
+      }
       const data = buildVRMData({
         humanoidMapping: mapping,
         metadata,
@@ -71,7 +87,7 @@ export function useVRM(model: LoadedModel | null, mapping: HumanoidMappingTable 
     } finally {
       setExporting(false)
     }
-  }, [model, mapping, metadata, expressions, springChains, bones])
+  }, [model, mapping, metadata, expressions, springChains, bones, format])
 
   return {
     metadata,
@@ -81,6 +97,8 @@ export function useVRM(model: LoadedModel | null, mapping: HumanoidMappingTable 
     springChains,
     autoSpringBones,
     clearSpringBones,
+    format,
+    setFormat,
     validation,
     exporting,
     exportError,
