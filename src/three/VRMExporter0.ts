@@ -57,7 +57,26 @@ class VRM0ExtensionPlugin {
       exporterVersion: 'ai-auto-vrm-maker',
       specVersion: '0.0',
       meta: data.meta,
-      humanoid: { humanBones },
+      // armStretch/legStretch/*Twist/feetSpacing/hasTranslationDoF are Unity HumanDescription
+      // retargeting parameters VRM0 carries alongside humanBones (VRM1 dropped this concept
+      // entirely - see HumanoidHumanBone, just {node}). Real UniVRM/Blender exports always
+      // populate these; omitting them isn't "use Unity's defaults; it's undefined behavior
+      // left to each viewer's own fallback, which - reproduced against a Blender-rigged VRM0
+      // confirmed working on cluster - is a plausible source of retargeting looking different
+      // (e.g. more exaggerated joint bends) than a spec-complete file. The values below are
+      // Unity's own stock defaults for a newly-configured Humanoid avatar, matching that
+      // reference file exactly.
+      humanoid: {
+        humanBones,
+        armStretch: 0.05,
+        legStretch: 0.05,
+        upperArmTwist: 0.5,
+        lowerArmTwist: 0.5,
+        upperLegTwist: 0.5,
+        lowerLegTwist: 0.5,
+        feetSpacing: 0,
+        hasTranslationDoF: false,
+      },
       firstPerson: this.buildFirstPerson(),
       materialProperties: this.buildMaterialProperties(),
     }
