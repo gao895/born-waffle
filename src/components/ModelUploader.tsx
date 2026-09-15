@@ -43,7 +43,17 @@ export function ModelUploader({ loading, onFileSelected, compact }: ModelUploade
         dragging ? 'border-violet-400 bg-violet-500/10' : 'border-slate-600 bg-slate-800/40 hover:border-slate-500'
       } ${compact ? 'p-6' : 'p-16'}`}
     >
-      <input ref={inputRef} type="file" accept=".glb,.gltf,.fbx" className="hidden" onChange={onChange} />
+      {/*
+        No `accept` filter here on purpose. iOS Safari's Files picker derives its filter from
+        UTIs, not raw extensions - `.fbx` has no system-registered UTI on iOS, so an
+        accept=".glb,.gltf,.fbx" list made the picker grey out or hide .fbx files entirely
+        (reported: files "not recognized" when browsing from the Files app), even though the
+        exact same attribute works fine on desktop browsers. loadModelFile() already rejects
+        anything that isn't .glb/.gltf/.fbx by filename with a clear error, so accepting
+        everything at the input level and validating in JS is both correct and the only way to
+        keep iOS's picker from hiding the file before the user can even select it.
+      */}
+      <input ref={inputRef} type="file" className="hidden" onChange={onChange} />
       {loading ? (
         <Loader2 className="h-10 w-10 animate-spin text-violet-400" />
       ) : (
