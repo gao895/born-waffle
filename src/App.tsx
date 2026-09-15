@@ -143,8 +143,12 @@ function App() {
   }, [exportVrmFile, exportError, pushToast])
 
   const handleDownload = useCallback(() => {
-    if (exportedBlob) downloadBlob(exportedBlob, 'avatar.vrm')
-  }, [exportedBlob])
+    if (!exportedBlob) return
+    downloadBlob(exportedBlob, 'avatar.vrm').catch((err) => {
+      console.error('[App] download failed', err)
+      pushToast('error', 'ダウンロードに失敗しました。')
+    })
+  }, [exportedBlob, pushToast])
 
   const displayScene = previewVrm ? previewVrm.scene : (model?.scene ?? null)
   const displayBones = previewVrm ? [] : bones
