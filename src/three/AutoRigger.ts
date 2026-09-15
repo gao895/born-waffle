@@ -80,24 +80,39 @@ export class HeuristicRiggingProvider implements RiggingProvider {
       const shoulderX = centerX + sign * torsoHalfWidth * 0.9
       const shoulder = makeBone(`${side}Shoulder`, upperChest, new THREE.Vector3(shoulderX, yAt(0.78), centerZ))
 
+      // A perfectly straight shoulder-elbow-wrist (or hip-knee-ankle) line has no defined bend
+      // plane, and a real reference rig confirmed working on cluster never has one either - it
+      // carries a small permanent pre-bend at the elbow (~19 degrees) and knee (~8 degrees) even
+      // at rest, specifically so a humanoid retargeting engine has an unambiguous axis to bend
+      // that joint around. Without it, Unity's Humanoid calibration is free to pick *any* axis
+      // for that joint, which is what produced wildly different, unnatural poses (an elbow
+      // locked out to the side, both arms thrown straight up) for otherwise-identical rigs.
+      const elbowBendY = height * 0.01
+      const elbowBendZ = height * 0.015
+      const kneeBendZ = height * 0.015
+
       if (armsExtended) {
         const armSpan = shoulderHalfWidth - torsoHalfWidth * 0.5
         const upperArmX = centerX + sign * (torsoHalfWidth * 0.5 + armSpan * 0.35)
         const lowerArmX = centerX + sign * (torsoHalfWidth * 0.5 + armSpan * 0.7)
         const handX = centerX + sign * shoulderHalfWidth
         const upperArm = makeBone(`${side}UpperArm`, shoulder, new THREE.Vector3(upperArmX, yAt(0.78), centerZ))
-        const lowerArm = makeBone(`${side}LowerArm`, upperArm, new THREE.Vector3(lowerArmX, yAt(0.78), centerZ))
+        const lowerArm = makeBone(
+          `${side}LowerArm`,
+          upperArm,
+          new THREE.Vector3(lowerArmX, yAt(0.78) - elbowBendY, centerZ - elbowBendZ),
+        )
         makeBone(`${side}Hand`, lowerArm, new THREE.Vector3(handX, yAt(0.78), centerZ))
       } else {
         const armX = centerX + sign * torsoHalfWidth * 1.05
         const upperArm = makeBone(`${side}UpperArm`, shoulder, new THREE.Vector3(armX, yAt(0.78), centerZ))
-        const lowerArm = makeBone(`${side}LowerArm`, upperArm, new THREE.Vector3(armX, yAt(0.62), centerZ))
+        const lowerArm = makeBone(`${side}LowerArm`, upperArm, new THREE.Vector3(armX, yAt(0.62), centerZ - elbowBendZ * 1.5))
         makeBone(`${side}Hand`, lowerArm, new THREE.Vector3(armX, yAt(0.47), centerZ))
       }
 
       const legX = side === 'left' ? legs.leftX : legs.rightX
       const upperLeg = makeBone(`${side}UpperLeg`, hips, new THREE.Vector3(legX, yAt(0.48), centerZ))
-      const lowerLeg = makeBone(`${side}LowerLeg`, upperLeg, new THREE.Vector3(legX, yAt(0.28), centerZ))
+      const lowerLeg = makeBone(`${side}LowerLeg`, upperLeg, new THREE.Vector3(legX, yAt(0.28), centerZ + kneeBendZ))
       const foot = makeBone(`${side}Foot`, lowerLeg, new THREE.Vector3(legX, yAt(0.04), centerZ))
       makeBone(`${side}Toes`, foot, new THREE.Vector3(legX, yAt(0.02), centerZ + height * 0.04))
     }
