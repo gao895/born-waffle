@@ -43,7 +43,7 @@ export function ModelUploader({ loading, onFileSelected, compact }: ModelUploade
         dragging ? 'border-violet-400 bg-violet-500/10' : 'border-slate-600 bg-slate-800/40 hover:border-slate-500'
       } ${compact ? 'p-6' : 'p-16'}`}
     >
-      <input ref={inputRef} type="file" accept=".glb,.gltf" className="hidden" onChange={onChange} />
+      <input ref={inputRef} type="file" accept=".glb,.gltf,.fbx" className="hidden" onChange={onChange} />
       {loading ? (
         <Loader2 className="h-10 w-10 animate-spin text-violet-400" />
       ) : (
@@ -53,7 +53,7 @@ export function ModelUploader({ loading, onFileSelected, compact }: ModelUploade
         <p className="text-lg font-medium text-slate-100">
           {loading ? 'モデルを読み込んでいます…' : '3Dモデルをここにドラッグ＆ドロップ'}
         </p>
-        {!compact && <p className="mt-1 text-sm text-slate-400">クリックしてファイルを選択（.glb / .gltf）</p>}
+        {!compact && <p className="mt-1 text-sm text-slate-400">クリックしてファイルを選択（.glb / .gltf / .fbx）</p>}
       </div>
     </div>
   )

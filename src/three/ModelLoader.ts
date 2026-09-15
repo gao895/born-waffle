@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import type { LoadedModel, ModelStats, MorphTargetInfo } from '../types/model'
 import { shrinkOversizedGlbImages } from './GlbImagePreprocessor'
 import { SafeDataUriImageLoader } from './SafeDataUriImageLoader'
@@ -24,12 +25,13 @@ const MAX_TEXTURE_SIZE = 2048
 
 export class UnsupportedFormatError extends Error {}
 
-/** Loads a .glb/.gltf File into a LoadedModel with derived statistics. */
+/** Loads a .glb/.gltf/.fbx File into a LoadedModel with derived statistics. */
 export async function loadModelFile(file: File): Promise<LoadedModel> {
   const name = file.name.toLowerCase()
+  if (name.endsWith('.fbx')) return loadFbxFile(file)
   if (!name.endsWith('.glb') && !name.endsWith('.gltf')) {
     throw new UnsupportedFormatError(
-      '対応していないファイル形式です。.glb または .gltf ファイルを選択してください。',
+      '対応していないファイル形式です。.glb / .gltf / .fbx ファイルを選択してください。',
     )
   }
 
@@ -68,6 +70,86 @@ export async function loadModelFile(file: File): Promise<LoadedModel> {
     textureLoadWarning,
     textureDiagnosticsLog: preprocessed.log,
   }
+}
+
+/**
+ * FBX is a completely different binary/ASCII format from glTF, so it needs its own loader
+ * (three.js's FBXLoader) rather than going through GLTFLoader - but the resulting scene graph
+ * (a THREE.Group with Bone/SkinnedMesh/Material nodes) is handled by the exact same
+ * analyzeScene/downscaleOversizedTextures/disposeModel logic below either way. This is the
+ * main path for a model already rigged in Blender/Maya/Unity and exported as FBX: since it
+ * arrives with a real skeleton, it skips HeuristicRiggingProvider's auto-rigging entirely and
+ * goes straight through the same BoneDetector/HumanoidMapper pipeline any skeleton-having GLB
+ * uses (see useSkeleton.ts) - the well-tested path, not the geometric-heuristic one.
+ *
+ * FBXLoader.parse() is synchronous but texture images (both embedded and externally referenced)
+ * decode asynchronously in the background afterward, so unlike the GLTFLoader path above -
+ * whose callback only fires once every resource is ready - this has to explicitly wait for
+ * pending texture images before analyzing/downscaling, or it would run against textures that
+ * haven't loaded yet. External texture file references (a "Path Mode: Copy" export without
+ * "Embed Textures" in Blender) have no matching file available in the browser and will simply
+ * fail to load - only embedded textures are guaranteed to work.
+ */
+async function loadFbxFile(file: File): Promise<LoadedModel> {
+  const arrayBuffer = await file.arrayBuffer()
+  const fbxLoader = new FBXLoader()
+  const scene = fbxLoader.parse(arrayBuffer, '')
+  scene.updateMatrixWorld(true)
+
+  await waitForTextureImages(scene)
+  await downscaleOversizedTextures(scene)
+
+  const animations = scene.animations ?? []
+  const { stats, skeleton, morphTargets, hasBones } = analyzeScene(scene, animations)
+
+  return {
+    fileName: file.name,
+    fileSize: file.size,
+    scene,
+    stats,
+    skeleton,
+    morphTargets,
+    animations,
+    hasBones,
+    textureLoadWarning: null,
+    textureDiagnosticsLog: [],
+  }
+}
+
+/**
+ * FBXLoader assigns each texture's underlying <img> element synchronously but lets it decode
+ * in the background, so code running right after parse() can see 0x0 images. Resolves once
+ * every texture already attached to a material has either finished loading or failed (a failed
+ * external reference shouldn't hang the whole model load - it just renders untextured).
+ */
+function waitForTextureImages(scene: THREE.Object3D): Promise<void> {
+  const pending: Promise<void>[] = []
+  const seen = new Set<THREE.Texture>()
+
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh) return
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      for (const key of TEXTURE_MAP_KEYS) {
+        const tex = (mat as unknown as Record<string, THREE.Texture | undefined>)[key]
+        if (!tex || seen.has(tex)) continue
+        seen.add(tex)
+        const img = tex.image as HTMLImageElement | undefined
+        if (img instanceof HTMLImageElement && !img.complete) {
+          pending.push(
+            new Promise((resolve) => {
+              img.addEventListener('load', () => resolve(), { once: true })
+              img.addEventListener('error', () => resolve(), { once: true })
+            }),
+          )
+        }
+      }
+    }
+  })
+
+  return Promise.all(pending).then(() => undefined)
 }
 
 /**
