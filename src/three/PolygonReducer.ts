@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { MeshoptSimplifier } from 'three/examples/jsm/libs/meshopt_simplifier.module.js'
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 /**
  * Reduces the model's total triangle count to fit a platform's polygon
@@ -54,7 +55,7 @@ export async function reduceTriangleCount(scene: THREE.Object3D, targetTriangleC
   for (const mesh of meshes) {
     const before = countTriangles(mesh.geometry)
     const meshTarget = Math.max(4, Math.round(before * ratio))
-    const after = simplifyMeshGeometry(mesh.geometry, meshTarget)
+    const after = simplifyMeshGeometry(mesh, meshTarget)
     afterTriangles += after
     results.push({ name: mesh.name || 'Mesh', beforeTriangles: before, afterTriangles: after })
   }
@@ -68,7 +69,21 @@ function countTriangles(geometry: THREE.BufferGeometry): number {
   return index ? index.count / 3 : (position?.count ?? 0) / 3
 }
 
-function simplifyMeshGeometry(geometry: THREE.BufferGeometry, targetTriangleCount: number): number {
+function simplifyMeshGeometry(mesh: THREE.Mesh, targetTriangleCount: number): number {
+  let geometry = mesh.geometry
+  if (!geometry.getIndex()) {
+    // FBXLoader (unlike GLTFLoader, whose glTF accessors always carry an explicit index) can hand
+    // back fully non-indexed geometry - no vertex is shared between adjacent triangles at all. If
+    // we fed that to simplify() via a trivial 0,1,2,... identity index below, meshopt's LockBorder
+    // flag (see the loop below) would see every single edge as a "boundary" (used by only one
+    // triangle) and refuse to collapse any of them, making simplification a silent no-op. Welding
+    // vertices whose full attribute set (position+normal+uv+skin weights+...) already matches
+    // recovers the real shared topology - exactly the interior vertices this exporter duplicated
+    // for no reason - while leaving genuine seams (a UV island edge, a hard normal) untouched.
+    geometry = mergeVertices(geometry)
+    mesh.geometry = geometry
+  }
+
   const position = geometry.getAttribute('position')
   if (!position || position.itemSize !== 3) return countTriangles(geometry)
 
@@ -105,7 +120,15 @@ function simplifyMeshGeometry(geometry: THREE.BufferGeometry, targetTriangleCoun
   }
 
   geometry.setIndex(new THREE.BufferAttribute(newIndices, 1))
-  return newIndices.length / 3
+
+  // simplify() only ever drops triangles from the index buffer - every attribute array keeps its
+  // original full length, vertices no surviving triangle references included, so a "reduced" mesh
+  // would otherwise still ship the entire pre-reduction vertex buffer (the dominant byte cost for
+  // a dense mesh) even though most of it is now dead weight. Expanding to only the surviving
+  // indices and re-welding shared vertices trims every attribute down to what's actually used.
+  const compacted = mergeVertices(geometry.toNonIndexed())
+  mesh.geometry = compacted
+  return countTriangles(compacted)
 }
 
 function identityIndex(vertexCount: number): Uint32Array | Uint16Array {
