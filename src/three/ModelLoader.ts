@@ -25,13 +25,19 @@ const MAX_TEXTURE_SIZE = 2048
 
 export class UnsupportedFormatError extends Error {}
 
-/** Loads a .glb/.gltf/.fbx File into a LoadedModel with derived statistics. */
+/** Loads a .glb/.gltf/.fbx/.vrm File into a LoadedModel with derived statistics. */
 export async function loadModelFile(file: File): Promise<LoadedModel> {
   const name = file.name.toLowerCase()
   if (name.endsWith('.fbx')) return loadFbxFile(file)
-  if (!name.endsWith('.glb') && !name.endsWith('.gltf')) {
+  // .vrm is binary glTF (the same container .glb uses) plus a VRM extension - re-loading an
+  // already-exported VRM to adjust its Humanoid mapping, expressions or SpringBone chains works
+  // through the exact same GLTFLoader path below with no VRM-specific handling needed here:
+  // BoneDetector/HumanoidMapper already re-derive Humanoid mapping from bone names alone, the
+  // same way they would for any other skinned .glb, so nothing about accepting the file depends
+  // on understanding the VRM/VRMC_vrm extension itself.
+  if (!name.endsWith('.glb') && !name.endsWith('.gltf') && !name.endsWith('.vrm')) {
     throw new UnsupportedFormatError(
-      '対応していないファイル形式です。.glb / .gltf / .fbx ファイルを選択してください。',
+      '対応していないファイル形式です。.glb / .gltf / .fbx / .vrm ファイルを選択してください。',
     )
   }
 

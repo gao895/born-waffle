@@ -49,7 +49,7 @@ export function ModelUploader({ loading, onFileSelected, compact }: ModelUploade
         accept=".glb,.gltf,.fbx" list made the picker grey out or hide .fbx files entirely
         (reported: files "not recognized" when browsing from the Files app), even though the
         exact same attribute works fine on desktop browsers. loadModelFile() already rejects
-        anything that isn't .glb/.gltf/.fbx by filename with a clear error, so accepting
+        anything that isn't .glb/.gltf/.fbx/.vrm by filename with a clear error, so accepting
         everything at the input level and validating in JS is both correct and the only way to
         keep iOS's picker from hiding the file before the user can even select it.
       */}
@@ -63,7 +63,7 @@ export function ModelUploader({ loading, onFileSelected, compact }: ModelUploade
         <p className="text-lg font-medium text-slate-100">
           {loading ? 'モデルを読み込んでいます…' : '3Dモデルをここにドラッグ＆ドロップ'}
         </p>
-        {!compact && <p className="mt-1 text-sm text-slate-400">クリックしてファイルを選択（.glb / .gltf / .fbx）</p>}
+        {!compact && <p className="mt-1 text-sm text-slate-400">クリックしてファイルを選択（.glb / .gltf / .fbx / .vrm）</p>}
       </div>
     </div>
   )
