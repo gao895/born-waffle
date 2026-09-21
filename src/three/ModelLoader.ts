@@ -98,6 +98,7 @@ async function loadFbxFile(file: File): Promise<LoadedModel> {
 
   await waitForTextureImages(scene)
   clearInvalidTextureMaps(scene)
+  resetSpuriousWhiteEmissive(scene)
   await downscaleOversizedTextures(scene)
 
   const animations = scene.animations ?? []
@@ -181,6 +182,38 @@ function clearInvalidTextureMaps(scene: THREE.Object3D): void {
           tex.dispose()
           mat.needsUpdate = true
         }
+      }
+    }
+  })
+}
+
+/**
+ * AI-generated FBX exports (Tripo confirmed, likely others) commonly write a full white
+ * Emissive/EmissiveColor into the material with no accompanying emissive map. FBXLoader passes
+ * that through faithfully (see its `materialNode.Emissive`/`EmissiveColor` handling), and a
+ * three-point-light Phong/Standard material with emissive locked to white renders that surface
+ * as flat, fully bright white regardless of its base color map - the emissive term is additive
+ * and a map-less [1,1,1] swamps everything else. This is invisible in a renderer whose own
+ * lighting happens to mask it, but it's blatant once the exported VRM is viewed anywhere with
+ * standard PBR shading (this app's own preview after round-tripping through export, cluster,
+ * VRChat, ...). A textured character was never meant to self-illuminate white, so treat a
+ * suspiciously-white, map-less emissive as the exporter mistake it almost certainly is and
+ * zero it out - a deliberately white-glowing material without a map to shape that glow would be
+ * essentially unheard of for this kind of asset.
+ */
+function resetSpuriousWhiteEmissive(scene: THREE.Object3D): void {
+  const WHITE_THRESHOLD = 0.9
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh) return
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      const m = mat as THREE.MeshPhongMaterial | THREE.MeshStandardMaterial
+      if (!m.emissive || m.emissiveMap) continue
+      if (m.emissive.r >= WHITE_THRESHOLD && m.emissive.g >= WHITE_THRESHOLD && m.emissive.b >= WHITE_THRESHOLD) {
+        m.emissive.setRGB(0, 0, 0)
+        m.needsUpdate = true
       }
     }
   })
