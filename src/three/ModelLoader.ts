@@ -25,13 +25,19 @@ const MAX_TEXTURE_SIZE = 2048
 
 export class UnsupportedFormatError extends Error {}
 
-/** Loads a .glb/.gltf/.fbx File into a LoadedModel with derived statistics. */
+/** Loads a .glb/.gltf/.fbx/.vrm File into a LoadedModel with derived statistics. */
 export async function loadModelFile(file: File): Promise<LoadedModel> {
   const name = file.name.toLowerCase()
   if (name.endsWith('.fbx')) return loadFbxFile(file)
-  if (!name.endsWith('.glb') && !name.endsWith('.gltf')) {
+  // .vrm is binary glTF (the same container .glb uses) plus a VRM extension - re-loading an
+  // already-exported VRM to adjust its Humanoid mapping, expressions or SpringBone chains works
+  // through the exact same GLTFLoader path below with no VRM-specific handling needed here:
+  // BoneDetector/HumanoidMapper already re-derive Humanoid mapping from bone names alone, the
+  // same way they would for any other skinned .glb, so nothing about accepting the file depends
+  // on understanding the VRM/VRMC_vrm extension itself.
+  if (!name.endsWith('.glb') && !name.endsWith('.gltf') && !name.endsWith('.vrm')) {
     throw new UnsupportedFormatError(
-      '対応していないファイル形式です。.glb / .gltf / .fbx ファイルを選択してください。',
+      '対応していないファイル形式です。.glb / .gltf / .fbx / .vrm ファイルを選択してください。',
     )
   }
 
@@ -97,6 +103,8 @@ async function loadFbxFile(file: File): Promise<LoadedModel> {
   scene.updateMatrixWorld(true)
 
   await waitForTextureImages(scene)
+  clearInvalidTextureMaps(scene)
+  resetSpuriousWhiteEmissive(scene)
   await downscaleOversizedTextures(scene)
 
   const animations = scene.animations ?? []
@@ -150,6 +158,71 @@ function waitForTextureImages(scene: THREE.Object3D): Promise<void> {
   })
 
   return Promise.all(pending).then(() => undefined)
+}
+
+/**
+ * An FBX texture that references an external file (a "Path Mode: Copy" export without embedded
+ * content) has no matching file in the browser and never resolves to real image data at all -
+ * there's no <img> element for waitForTextureImages() above to wait on or see fail, `texture.
+ * image` simply stays whatever FBXLoader initialized it to (typically null). That's invisible in
+ * the 3D viewer (the mesh just renders untextured on that map), but GLTFExporter has no such
+ * fallback: it throws ("No valid image data found") the moment it tries to serialize a texture
+ * with no image, aborting the entire VRM export over one broken map. Dropping the map here first
+ * keeps that failure from reaching export at all, consistent with this app's documented behavior
+ * for unresolvable external texture references (render without it, don't fail the whole model).
+ */
+function clearInvalidTextureMaps(scene: THREE.Object3D): void {
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh) return
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      const record = mat as unknown as Record<string, THREE.Texture | undefined>
+      for (const key of TEXTURE_MAP_KEYS) {
+        const tex = record[key]
+        if (!tex) continue
+        const img = tex.image as { width?: number; height?: number } | null | undefined
+        if (!img || !img.width || !img.height) {
+          record[key] = undefined
+          tex.dispose()
+          mat.needsUpdate = true
+        }
+      }
+    }
+  })
+}
+
+/**
+ * AI-generated FBX exports (Tripo confirmed, likely others) commonly write a full white
+ * Emissive/EmissiveColor into the material with no accompanying emissive map. FBXLoader passes
+ * that through faithfully (see its `materialNode.Emissive`/`EmissiveColor` handling), and a
+ * three-point-light Phong/Standard material with emissive locked to white renders that surface
+ * as flat, fully bright white regardless of its base color map - the emissive term is additive
+ * and a map-less [1,1,1] swamps everything else. This is invisible in a renderer whose own
+ * lighting happens to mask it, but it's blatant once the exported VRM is viewed anywhere with
+ * standard PBR shading (this app's own preview after round-tripping through export, cluster,
+ * VRChat, ...). A textured character was never meant to self-illuminate white, so treat a
+ * suspiciously-white, map-less emissive as the exporter mistake it almost certainly is and
+ * zero it out - a deliberately white-glowing material without a map to shape that glow would be
+ * essentially unheard of for this kind of asset.
+ */
+function resetSpuriousWhiteEmissive(scene: THREE.Object3D): void {
+  const WHITE_THRESHOLD = 0.9
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh) return
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      const m = mat as THREE.MeshPhongMaterial | THREE.MeshStandardMaterial
+      if (!m.emissive || m.emissiveMap) continue
+      if (m.emissive.r >= WHITE_THRESHOLD && m.emissive.g >= WHITE_THRESHOLD && m.emissive.b >= WHITE_THRESHOLD) {
+        m.emissive.setRGB(0, 0, 0)
+        m.needsUpdate = true
+      }
+    }
+  })
 }
 
 /**
