@@ -97,6 +97,7 @@ async function loadFbxFile(file: File): Promise<LoadedModel> {
   scene.updateMatrixWorld(true)
 
   await waitForTextureImages(scene)
+  clearInvalidTextureMaps(scene)
   await downscaleOversizedTextures(scene)
 
   const animations = scene.animations ?? []
@@ -150,6 +151,39 @@ function waitForTextureImages(scene: THREE.Object3D): Promise<void> {
   })
 
   return Promise.all(pending).then(() => undefined)
+}
+
+/**
+ * An FBX texture that references an external file (a "Path Mode: Copy" export without embedded
+ * content) has no matching file in the browser and never resolves to real image data at all -
+ * there's no <img> element for waitForTextureImages() above to wait on or see fail, `texture.
+ * image` simply stays whatever FBXLoader initialized it to (typically null). That's invisible in
+ * the 3D viewer (the mesh just renders untextured on that map), but GLTFExporter has no such
+ * fallback: it throws ("No valid image data found") the moment it tries to serialize a texture
+ * with no image, aborting the entire VRM export over one broken map. Dropping the map here first
+ * keeps that failure from reaching export at all, consistent with this app's documented behavior
+ * for unresolvable external texture references (render without it, don't fail the whole model).
+ */
+function clearInvalidTextureMaps(scene: THREE.Object3D): void {
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh) return
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const mat of materials) {
+      if (!mat) continue
+      const record = mat as unknown as Record<string, THREE.Texture | undefined>
+      for (const key of TEXTURE_MAP_KEYS) {
+        const tex = record[key]
+        if (!tex) continue
+        const img = tex.image as { width?: number; height?: number } | null | undefined
+        if (!img || !img.width || !img.height) {
+          record[key] = undefined
+          tex.dispose()
+          mat.needsUpdate = true
+        }
+      }
+    }
+  })
 }
 
 /**

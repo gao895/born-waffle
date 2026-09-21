@@ -1,3 +1,16 @@
+// Some rigging pipelines (Mixamo chief among them) bake their own tool/rig name into every
+// bone as a namespace prefix ("mixamorig:Hips"). That survives fine when the ':' separator is
+// still there for the regex below to strip - but three.js's FBXLoader runs every bone name
+// through PropertyBinding.sanitizeNodeName(), which treats ':' as a reserved character and
+// deletes it outright (not just before parsing gets here), leaving "mixamorigHips" with no
+// separator left to split on. camelCase splitting still breaks that into ["mixamorig", "hips"]
+// tokens, but without filtering "mixamorig" out it stays baked into the joined identifier
+// ("mixamorighips"), which no longer exact-matches any VRM bone alias and barely partial-matches
+// short ones (a short alias like "hips"/"head"/"neck" gets swamped by the prefix's own length) -
+// dropping it here, the same way left/right tokens are already dropped, restores exact matches
+// across an entire Mixamo-rigged FBX.
+const NAMESPACE_NOISE_TOKENS = new Set(['mixamorig'])
+
 /**
  * Splits a raw bone name into lowercase word tokens, handling the naming
  * conventions found in the wild: rig namespaces ("mixamorig:Hips",
@@ -16,6 +29,7 @@ export function splitBoneNameTokens(raw: string): string[] {
     .split(/[^a-zA-Z0-9]+/)
     .map((t) => t.toLowerCase())
     .filter(Boolean)
+    .filter((t) => !NAMESPACE_NOISE_TOKENS.has(t))
 }
 
 /** Normalizes a bone name into a single comparable identifier. */
